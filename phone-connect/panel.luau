@@ -341,7 +341,7 @@ local function deviceView(d)
 		table.insert(identity, ui.input({ key = "alias:" .. id, value = name, flexGrow = 1,
 			onChange = function(value) nameValue = value end,
 			onSubmit = function(value) send({ op = "set_alias", device = id, alias = value }); editingName = nil; render() end }))
-		table.insert(identity, button("chat.save", "check", function()
+		table.insert(identity, icon("check", "chat.save", function()
 			send({ op = "set_alias", device = id, alias = nameValue }); editingName = nil; render()
 		end))
 	else
