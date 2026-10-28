@@ -4,6 +4,8 @@
       "id": "preview",
       "name": "Galaxy S25+",
       "type": "phone",
+      "ipv4": "192.0.2.10",
+      "ipv6": "2001:db8:1234:5678:90ab:cdef:1234:5678",
       "isPaired": true,
       "isReachable": true,
       "batteryCharge": 76,

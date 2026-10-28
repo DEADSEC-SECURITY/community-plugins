@@ -75,7 +75,7 @@ key('contacts-search:a').props.onChange('unknown')
 assert(text('chat.no_results'))
 text('chat.tab_device').props.onClick()
 local before=#commands
-text('action.unpair').props.onClick()
+assert(find(function(n) return n.props.tooltip=='action.unpair' end)).props.onClick()
 assert(#commands==before,'Unpair first click must only ask for confirmation')
 text('chat.cancel').props.onClick()
 env.onClose();env.onOpen()
@@ -89,7 +89,7 @@ env.onIpc('preview',{devices=values['pc.devices'],order={'a'},selected='a',threa
 before=#commands
 text('panel.sms_send').props.onClick()
 env.onIpc('view',{tab='device'})
-text('action.unpair').props.onClick();text('action.unpair').props.onClick()
+assert(find(function(n) return n.props.tooltip=='action.unpair' end)).props.onClick();text('action.unpair').props.onClick()
 assert(#commands==before,'Preview must not send commands')
 env.onClose()
 -- A real address book must not create an unbounded native tree or repeatedly

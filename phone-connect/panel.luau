@@ -17,7 +17,7 @@ local mediaView = require("./media-view.luau").new({ ui = ui, api = noctalia, t 
 local opened = false
 local preferences = noctalia.state.get("pc.view") or { tab = "messages", compact = false, devices = {} }
 local previewPreferences = nil
-local confirmUnpair, editingName, nameValue, details = nil, nil, "", false
+local confirmUnpair, editingName, nameValue = nil, nil, ""
 local function saveView() noctalia.state.set("pc.view", preferences) end
 local function viewFor(id)
 	if not preferences.devices[id] then preferences.devices[id] = { search = "", contactSearch = "" } end
@@ -366,21 +366,38 @@ local function deviceView(d)
 	local name = (noctalia.state.get("pc.aliasMap") or {})[id] or d.name
 	local image = (noctalia.state.get("pc.imageMap") or {})[id]
 	local identity = {}
+	local editAction
 	if image and image ~= "" then table.insert(identity, ui.image({ path = image, width = 48, height = 48, radius = 24, fit = "cover",
 		onClick = function() send({ op = "pick_image", device = id }) end })) end
 	if editingName == id then
 		table.insert(identity, ui.input({ key = "alias:" .. id, value = name, flexGrow = 1,
 			onChange = function(value) nameValue = value end,
 			onSubmit = function(value) send({ op = "set_alias", device = id, alias = value }); editingName = nil; render() end }))
-		table.insert(identity, icon("check", "chat.save", function()
+		editAction = icon("check", "chat.save", function()
 			send({ op = "set_alias", device = id, alias = nameValue }); editingName = nil; render()
-		end))
+		end)
 	else
-		table.insert(identity, label(name, { fontSize = 18, fontWeight = "medium", flexGrow = 1, maxLines = 2 }))
-		table.insert(identity, icon("pencil", "chat.rename", function() editingName = id; nameValue = name; render() end))
+		table.insert(identity, label(name, { fontSize = 18, fontWeight = "medium", flexGrow = 1, minWidth = 0, maxLines = 2 }))
+		editAction = icon("pencil", "chat.rename", function() editingName = id; nameValue = name; render() end)
 	end
+	local connection = {}
+	for _, field in ipairs({ { "IPv4", d.ipv4 }, { "IPv6", d.ipv6 }, { t("panel.type"), d.type } }) do
+		table.insert(connection, label(field[1] .. ": " .. (field[2] or "—"),
+			{ fontSize = 10, color = "on_surface_variant", maxLines = 0 }))
+	end
+	table.insert(identity, ui.column({ key = "connection:" .. id, flexGrow = 1, minWidth = 0, gap = 2 }, connection))
+	table.insert(identity, editAction)
+	if d.isPaired then table.insert(identity, icon("link-off", "action.unpair", function() confirmUnpair = id; render() end)) end
 	table.insert(identity, button("chat.photo", "photo", function() send({ op = "pick_image", device = id }) end))
-	local rows = { ui.row({ gap = 10, align = "center" }, identity) }
+	local rows = { ui.row({ key = "device-identity:" .. id, gap = 10, align = "center" }, identity) }
+	if d.isPaired and confirmUnpair == id then
+		table.insert(rows, note(t("chat.confirm_unpair")))
+		table.insert(rows, ui.row({ gap = 10 }, {
+			button("chat.cancel", "x", function() confirmUnpair = nil; render() end, { flexGrow = 1 }),
+			button("action.unpair", "link-off", function() send({ op = "unpair", device = id }); confirmUnpair = nil; render() end,
+				{ flexGrow = 1, variant = "destructive" }),
+		}))
+	end
 	if not d.isPaired then
 		table.insert(rows, button("action.pair", "link", function() send({ op = "pair", device = id }) end, { variant = "primary" }))
 	else
@@ -397,22 +414,6 @@ local function deviceView(d)
 			table.insert(rows, ui.row({ gap = 10 }, pair))
 		end
 		table.insert(rows, mediaView(d))
-	end
-	table.insert(rows, button("chat.connection_details", details and "chevron-up" or "chevron-down", function() details = not details; render() end, { variant = "ghost" }))
-	if details then
-		for _, field in ipairs({ { "IPv4", d.ipv4 }, { "IPv6", d.ipv6 }, { t("panel.type"), d.type } }) do
-			table.insert(rows, label(field[1] .. ": " .. (field[2] or "—"), { fontSize = 12, maxLines = 3 }))
-		end
-	end
-	if d.isPaired then
-		if confirmUnpair == id then
-			table.insert(rows, note(t("chat.confirm_unpair")))
-			table.insert(rows, ui.row({ gap = 10 }, {
-				button("chat.cancel", "x", function() confirmUnpair = nil; render() end, { flexGrow = 1 }),
-				button("action.unpair", "link-off", function() send({ op = "unpair", device = id }); confirmUnpair = nil; render() end,
-					{ flexGrow = 1, variant = "destructive" }),
-			}))
-		else table.insert(rows, button("action.unpair", "link-off", function() confirmUnpair = id; render() end, { variant = "ghost" })) end
 	end
 	return ui.scroll({ flexGrow = 1, gap = 16 }, rows)
 end
