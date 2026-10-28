@@ -18,6 +18,7 @@ local api = {
     fileExists = function() return false end,
     commandExists = function() return true end,
     setUpdateInterval = noop,
+    nowMs = function() return 1000 end,
     runStream = function() return true end,
     log = noop,
     notifyError = function(message) error(message) end,
@@ -28,6 +29,11 @@ local api = {
     end,
 }
 local env = setmetatable({noctalia = api}, {__index = _G})
+local modules = {}
+env.require = function(path)
+    if not modules[path] then modules[path] = assert(loadfile(directory .. "/" .. path, "t", env))() end
+    return modules[path]
+end
 
 if mode == "service" then
     assert(loadfile(directory .. "/service.luau", "t", env))()
@@ -36,7 +42,9 @@ if mode == "service" then
         assert(index < 30, "Unexpected refresh loop")
         local item = queue[index]
         local response = "()"
-        if item.command:find("NameHasOwner", 1, true) then
+        if type(item.command) == "table" then
+            response = "{}" -- Dependency probe; mocked without starting Python.
+        elseif item.command:find("NameHasOwner", 1, true) then
             response = "(true,)"
         elseif item.command:find(".devices false false", 1, true) then
             response = "(['test_phone'],)"
@@ -55,7 +63,7 @@ if mode == "service" then
     assert(values['pc.devices'].test_phone.batteryCharge == 45)
     local refreshed = false
     for _, command in ipairs(commands) do
-        if command:find("kdeconnect-cli --refresh", 1, true) then refreshed = true end
+        if type(command) == "string" and command:find("kdeconnect-cli --refresh", 1, true) then refreshed = true end
     end
     assert(refreshed, "Missing cellular report must use the defined CLI helper")
 elseif mode == "panel" then
@@ -79,7 +87,7 @@ elseif mode == "panel" then
     local renders = 0
     env.panel = {render = function() renders = renders + 1 end, close = noop}
     assert(loadfile(directory .. "/panel.luau", "t", env))()
-    env.render()
+    env.onOpen()
     device.mediavolume = 50
     env.render()
     device.isReachable = false

@@ -1,11 +1,9 @@
 -- entries/service.luau
 -- Phone Connect - KDE Connect backend service (the single owner of DBus logic).
 --
--- Architecture: Noctalia plugin scripts run in an isolated sandbox with NO
--- `require`/`dofile`/`loadfile`. So all KDE Connect interaction lives here and
--- is published to UI entries (widget/tile/panel) as plain data via
--- `noctalia.state`. A future Valent backend would replace this file's internals
--- only; the state contract below stays unchanged so UI entries need no edits.
+-- Device controls remain here. The messaging service owns the Python/Gio
+-- bridge and publishes device-scoped conversation/contact/notification state.
+-- API 24 provides relative modules and argument-array subprocess calls.
 --
 
 -- Local translation: reads from pc.trTable (published by service) so users
@@ -14,6 +12,8 @@ local function t(key)
 	local table = noctalia.state.get("pc.trTable") or {}
 	return table[key] or key
 end
+
+local messaging = require("./messaging-service.luau").start(noctalia)
 
 -- ── State contract (read by UI entries) ──────────────────────────────────────
 --   noctalia.state "pc.backend"   : { available=bool, name="KDE Connect"|"None",
@@ -269,7 +269,10 @@ end
 	end
 
 	local function publishTranslations(lang)
-		local table = loadTranslations(lang or "en")
+		local table = loadTranslations("en")
+		if lang and lang ~= "en" then
+			for key, value in pairs(loadTranslations(lang)) do table[key] = value end
+		end
 		noctalia.state.set("pc.trTable", table)
 		noctalia.state.set("pc.lang", lang)
 	end
@@ -680,6 +683,11 @@ local function handleCommand(cmd)
 	if type(cmd) ~= "table" then return end
 	local op = cmd.op
 	local dev = cmd.device or ""
+	if op == "sync" or op == "contacts_sync" or op == "history" or op == "sms_send"
+		or op == "notification_reply" or op == "notification_dismiss" then
+		messaging.command(cmd)
+		return
+	end
 	-- helper: run a mutating op, then refresh so the UI updates immediately
 	local function mutating(fn)
 		fn(function() refreshDevices() end)
@@ -798,19 +806,6 @@ local function handleCommand(cmd)
 				end)
 			end
 		end)
-	elseif op == "sms_send" then
-		-- Send an SMS via kdeconnect-cli (handles address/message/attachment).
-		local args = "--send-sms " .. shellQuote(cmd.text or "")
-			.. " --destination " .. shellQuote(cmd.destination or "")
-			.. " -d " .. shellQuote(dev)
-		if cmd.attachment and cmd.attachment ~= "" then
-			args = args .. " --attachment " .. shellQuote(cmd.attachment)
-		end
-		runCli(args, function(res)
-			if res and not res.error then
-				noctalia.notify(t("notify.sms_sent"), cmd.destination or "")
-			end
-		end)
 	elseif op == "launch_sms_app" then
 		gdbusSubMethod(dev, "sms", "launchApp", "", nil)
 	elseif op == "media" then
@@ -854,21 +849,19 @@ end
 
 -- ── Lifecycle ────────────────────────────────────────────────────────────────
 intervalMs = function()
-	if pendingPick then return 1000 end  -- poll the picker result promptly
-	local secs = tonumber(noctalia.getConfig("state_update_interval")) or 30
-	if secs <= 0 then return 3600000 end   -- disabled: large interval to minimize wakeups
-	-- if media is playing, poll faster for live position updates
-	for _, d in pairs(devices) do
-		if d.mediaisPlaying == true then return 1000 end
-	end
-	return secs * 1000
+	return 1000 -- Lightweight bridge deadlines; device polling keeps its configured cadence.
 end
 
+local lastDevicePoll = 0
 function update()
 	local secs = tonumber(noctalia.getConfig("state_update_interval")) or 30
 	noctalia.setUpdateInterval(intervalMs())
 	pollPendingPick()
+	messaging.tick()
 	if secs <= 0 then return end            -- disabled: skip auto-refresh
+	for _, d in pairs(devices) do if d.mediaisPlaying then secs = 1; break end end
+	if os.time() - lastDevicePoll < secs then return end
+	lastDevicePoll = os.time()
 	detectBackend()
 	refreshDevices()
 end
@@ -910,6 +903,5 @@ noctalia.state.watch("pc.cmd", function(cmd)
 	local seq = tonumber(cmd.seq) or 0
 	if seq <= lastCmdSeq then return end
 	lastCmdSeq = seq
-	cmd.seq = nil
 	handleCommand(cmd)
 end)
