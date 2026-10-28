@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
-"""KDE Connect D-Bus adapter. JSON on stdout; no message/contact files written.
+"""KDE Connect D-Bus adapter. JSON on stdout; no persistent message archive.
 
 watch subscribes before taking snapshots. request performs one explicit operation.
 The Luau service owns the UI model and consumes newline-delimited JSON events.
+Embedded contact photos are decoded into a private, session-only runtime cache.
 """
 
 import argparse
 import base64
 import binascii
+import hashlib
 import json
 import os
 from pathlib import Path
 import quopri
 import re
 import sys
+import tempfile
 import time
 from urllib.parse import unquote
 import xml.etree.ElementTree as ET
@@ -23,6 +26,7 @@ ROOT = "/modules/kdeconnect"
 DEVICE = SERVICE + ".device"
 PROPERTIES = "org.freedesktop.DBus.Properties"
 PAGE_SIZE = 50
+MAX_PHOTO_BYTES = 256 * 1024
 
 
 def unpack(value):
@@ -108,13 +112,89 @@ def vcard_value(head, value):
         return raw.decode("utf-8", errors="replace")
 
 
+def photo_bytes(head, value):
+    """Accept bounded embedded raster photos only; never fetch photo URIs."""
+    if value.lower().startswith("data:image/"):
+        meta, sep, value = value.partition(",")
+        if not sep or not meta.lower().endswith(";base64"):
+            return None
+    elif not re.search(r";ENCODING=(?:B|BASE64)(?:;|$)", head, re.I):
+        return None
+    if len(value) > (MAX_PHOTO_BYTES * 4 // 3) + 16:
+        return None
+    try:
+        raw = base64.b64decode(re.sub(r"\s", "", value), validate=True)
+    except (ValueError, binascii.Error):
+        return None
+    if len(raw) > MAX_PHOTO_BYTES or not photo_extension(raw):
+        return None
+    return raw
+
+
+def photo_extension(raw):
+    if raw.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if raw.startswith(b"RIFF") and raw[8:12] == b"WEBP":
+        return ".webp"
+    return None
+
+
+def photo_directory(device, runtime_dir=None, create=True):
+    runtime = runtime_dir or os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime:
+        return None
+    root = Path(runtime)
+    try:
+        if not root.is_dir() or root.stat().st_uid != os.getuid():
+            return None
+        directory = root / "noctalia-phone-connect" / hashlib.sha256(device.encode()).hexdigest()[:24]
+        if not create and not directory.is_dir():
+            return None
+        for folder in (directory.parent, directory):
+            folder.mkdir(mode=0o700, exist_ok=True)
+            if folder.is_symlink() or folder.stat().st_uid != os.getuid():
+                return None
+            folder.chmod(0o700)
+        return directory
+    except OSError:
+        return None
+
+
+def cache_photo(directory, raw):
+    if directory is None:
+        return None
+    path = directory / (hashlib.sha256(raw).hexdigest() + photo_extension(raw))
+    temporary = None
+    try:
+        if path.is_file() and not path.is_symlink() and path.read_bytes() == raw:
+            return str(path)
+        with tempfile.NamedTemporaryFile(dir=directory, prefix=".photo-", delete=False) as output:
+            temporary = Path(output.name)
+            output.write(raw)  # NamedTemporaryFile uses mode 0600; replace is atomic.
+        temporary.replace(path)
+        return str(path)
+    except OSError:
+        return None
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 def parse_vcard(text, identifier):
-    name, fallback, numbers = "", "", []
+    name, fallback, numbers, photo = "", "", [], None
     for line in vcard_lines(text):
         head, sep, value = line.partition(":")
         if not sep:
             continue
         field = head.split(";", 1)[0].split(".")[-1].upper()
+        if field == "PHOTO":
+            photo = photo_bytes(head, value) or photo
+            continue
         if field not in ("FN", "N", "TEL"):
             continue
         value = vcard_value(head, value)
@@ -129,14 +209,19 @@ def parse_vcard(text, identifier):
     if not numbers:
         return None
     name = name or fallback or numbers[0]
-    return {"id": identifier, "name": name, "numbers": numbers,
-            "search": (name + " " + " ".join(numbers) + " " + " ".join(map(normalize_number, numbers))).casefold()}
+    contact = {"id": identifier, "name": name, "numbers": numbers,
+               "search": (name + " " + " ".join(numbers) + " " + " ".join(map(normalize_number, numbers))).casefold()}
+    if photo:
+        contact["photo"] = photo
+    return contact
 
 
-def read_contacts(device, data_home=None):
+def read_contacts(device, data_home=None, runtime_dir=None):
     base = Path(data_home or os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share")))
     directory = base / "kpeoplevcard" / ("kdeconnect-" + device)
     contacts = []
+    photos = None
+    retained = set()
     if directory.is_dir():
         for path in sorted(directory.iterdir()):
             if path.suffix not in (".vcf", ".vcard") or not path.is_file():
@@ -144,9 +229,30 @@ def read_contacts(device, data_home=None):
             try:
                 contact = parse_vcard(path.read_text(encoding="utf-8", errors="surrogateescape"), path.stem)
                 if contact:
+                    raw_photo = contact.pop("photo", None)
+                    if raw_photo:
+                        photos = photos or photo_directory(device, runtime_dir)
+                        photo = cache_photo(photos, raw_photo)
+                        if photo:
+                            contact["photo"] = photo
+                            retained.add(Path(photo).name)
                     contacts.append(contact)
             except OSError:
                 continue  # A concurrent contact sync may replace a file.
+    # Drop replaced/removed photos after a short grace period for open panels and
+    # concurrent readers. The runtime directory is also removed at logout.
+    photos = photos or photo_directory(device, runtime_dir, create=False)
+    if photos:
+        try:
+            cached = list(photos.iterdir())
+        except OSError:
+            cached = []
+        for path in cached:
+            try:
+                if re.fullmatch(r"[0-9a-f]{64}\.(jpg|png|webp)", path.name) and path.name not in retained and path.stat().st_mtime < time.time() - 60:
+                    path.unlink()
+            except OSError:
+                pass
     return sorted(contacts, key=lambda c: (c["name"].casefold(), c["id"]))
 
 

@@ -1,7 +1,10 @@
 import importlib.util
+import base64
+import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("bridge", Path(__file__).resolve().parents[1] / "bridge.py")
 bridge = importlib.util.module_from_spec(spec)
@@ -66,6 +69,40 @@ class BridgeTests(unittest.TestCase):
         contact = bridge.parse_vcard(b'FN;CHARSET=ISO-8859-1:Andr\xe9\nTEL:123'.decode('utf-8', errors='surrogateescape'), 'raw')
         self.assertEqual(contact['name'], 'André')
         self.assertIsNotNone(bridge.parse_vcard('FN;ENCODING=B:invalid!\nTEL:123', 'bad'))
+
+    def test_embedded_photo_formats_and_limits(self):
+        # A tiny synthetic PNG; never use a real contact photo in test fixtures.
+        encoded = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII='
+        raw = base64.b64decode(encoded)
+        card = 'FN:Alex\nTEL:123\nPHOTO;ENCODING=BASE64;PNG:' + encoded[:40] + '\n ' + encoded[40:]
+        self.assertEqual(bridge.parse_vcard(card, 'photo')['photo'], raw)
+        self.assertEqual(bridge.photo_bytes('PHOTO', 'data:image/png;base64,' + encoded), raw)
+        for value in ('https://example.invalid/photo.jpg', 'file:///etc/passwd', 'data:image/svg+xml;base64,PHN2Zy8+'):
+            self.assertIsNone(bridge.photo_bytes('PHOTO', value))
+        self.assertIsNone(bridge.photo_bytes('PHOTO;ENCODING=B', 'invalid!'))
+        self.assertIsNone(bridge.photo_bytes('PHOTO;ENCODING=B', 'A' * (bridge.MAX_PHOTO_BYTES * 2)))
+
+    def test_private_session_photo_cache_refresh_and_fallback(self):
+        raw = b'\xff\xd8\xff' + b'synthetic jpeg content'
+        with tempfile.TemporaryDirectory() as data, tempfile.TemporaryDirectory() as runtime:
+            cache = Path(data) / 'kpeoplevcard' / 'kdeconnect-phone'
+            cache.mkdir(parents=True)
+            card = cache / '1.vcf'
+            card.write_text('FN:Alex\nTEL:123\nPHOTO;ENCODING=BASE64;JPEG:' + base64.b64encode(raw).decode())
+            contact = bridge.read_contacts('phone', data, runtime)[0]
+            image = Path(contact['photo'])
+            self.assertEqual(image.read_bytes(), raw)
+            self.assertEqual(image.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(image.parent.stat().st_mode & 0o777, 0o700)
+            self.assertNotIn('Alex', image.name)
+            self.assertEqual(bridge.read_contacts('phone', data, runtime)[0]['photo'], str(image))
+            self.assertNotEqual(bridge.photo_directory('other', runtime), image.parent)
+            with patch.dict(os.environ, {'XDG_RUNTIME_DIR': ''}):
+                self.assertNotIn('photo', bridge.read_contacts('phone', data)[0])
+            os.utime(image, (1, 1))
+            card.write_text('FN:Alex\nTEL:123')
+            self.assertNotIn('photo', bridge.read_contacts('phone', data, runtime)[0])
+            self.assertFalse(image.exists(), 'Removed photos must be cleaned up')
 
     def test_number_matching_does_not_guess_country(self):
         self.assertEqual(bridge.normalize_number("+1 (555) 010-1000"), "+15550101000")

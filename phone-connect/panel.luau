@@ -164,16 +164,47 @@ local function contactPicker(id, d, pick)
 	local first, last, pager, page = pageRange(view, "contactPage", #matches, 25)
 	for i = first, last do
 		local contact = matches[i]
-		local children = { label(contact.name, { fontSize = 14, fontWeight = "medium", maxLines = 2 }) }
-		for _, number in ipairs(contact.numbers) do
-			local actions = {
-				label(number, { flexGrow = 1, fontSize = 12, maxLines = 1 }),
-				button(pick and "chat.choose" or "chat.message", "message", function() compose(id, number, contact.name) end),
-			}
-			if not pick then table.insert(actions, icon("copy", "chat.copy_number", function() noctalia.copyToClipboard(number, "text/plain") end)) end
-			table.insert(children, ui.row({ gap = 8, align = "center" }, actions))
+		local expanded = view.expandedContact == contact.id
+		local toggle = function()
+			view.expandedContact = not expanded and contact.id or nil; saveView(); render()
 		end
-		table.insert(rows, ui.column({ key = "contact:" .. id .. ":" .. contact.id, gap = 6, padding = 12,
+		local avatar
+		if contact.photo then
+			avatar = ui.image({ path = contact.photo, width = 32, height = 32, radius = 16, fit = "cover" })
+		else
+			local initials = {}
+			for word in (contact.name or ""):gmatch("%S+") do
+				local endByte = utf8.offset(word, 2) or (#word + 1)
+				table.insert(initials, word:sub(1, endByte - 1):upper())
+				if #initials == 2 then break end
+			end
+			avatar = ui.column({ width = 32, height = 32, radius = 16, fill = "primary/0.13", align = "center", justify = "center" }, {
+				label(table.concat(initials), { fontSize = 11, color = "primary" }),
+			})
+		end
+		local count = #contact.numbers
+		local summary = count == 1 and contact.numbers[1] or t("chat.numbers_count"):gsub("{count}", tostring(count))
+		local children = { ui.row({ key = "contact-toggle:" .. id .. ":" .. contact.id,
+			gap = 10, align = "center", onClick = toggle,
+			tooltip = t(expanded and "chat.collapse_contact" or "chat.expand_contact") }, {
+			avatar,
+			ui.column({ gap = 2, flexGrow = 1, minWidth = 0 }, {
+				label(contact.name, { fontSize = 13, fontWeight = "medium", maxLines = expanded and 0 or 1 }),
+				label(summary, { fontSize = 10, color = "on_surface_variant", maxLines = 1 }),
+			}),
+			ui.glyph({ name = expanded and "chevron-up" or "chevron-down", size = 16, color = "on_surface_variant" }),
+		}) }
+		if expanded then
+			for _, number in ipairs(contact.numbers) do
+				local actions = {
+					label(number, { flexGrow = 1, fontSize = 12, maxLines = 2 }),
+					button(pick and "chat.choose" or "chat.message", "message", function() compose(id, number, contact.name) end),
+				}
+				if not pick then table.insert(actions, icon("copy", "chat.copy_number", function() noctalia.copyToClipboard(number, "text/plain") end)) end
+				table.insert(children, ui.row({ gap = 8, align = "center" }, actions))
+			end
+		end
+		table.insert(rows, ui.column({ key = "contact:" .. id .. ":" .. contact.id, gap = 8, padding = 8,
 			fill = "surface/0.65", radius = 8 }, children))
 	end
 	if #rows == 0 then table.insert(rows, note(t(#d.contacts == 0 and "chat.no_contacts" or "chat.no_results"))) end
@@ -423,7 +454,9 @@ function render()
 end
 
 function onOpen(_context)
-	opened = true; preferences.tab = "messages"
+	opened = true
+	local defaultPage = noctalia.getConfig("default_page")
+	preferences.tab = (defaultPage == "device" or defaultPage == "contacts" or defaultPage == "notifications") and defaultPage or "messages"
 	local id = noctalia.state.get("pc.selected") or (noctalia.state.get("pc.order") or {})[1]
 	if id then sync(id) end
 	render()
@@ -446,6 +479,7 @@ function onIpc(event, payload)
 		end
 		preview = value
 		if value.thread then viewFor(value.selected).thread = value.thread; viewFor(value.selected).showThread = true end
+		if type(value.expandedContact) == "string" then viewFor(value.selected).expandedContact = value.expandedContact end
 	elseif event == "view" then
 		if value.tab == "messages" or value.tab == "contacts" or value.tab == "notifications" or value.tab == "device" then
 			preferences.tab = value.tab

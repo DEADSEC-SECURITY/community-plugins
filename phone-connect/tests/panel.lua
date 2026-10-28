@@ -1,6 +1,7 @@
 local directory = arg[1] or "phone-connect"
 local values, watchers, tree, commands = {}, {}, nil, {}
 local reads = {}
+local config = {enable_clipboard_action=true}
 local function noop() end
 local api = {
     state={get=function(k) reads[k]=(reads[k] or 0)+1; return values[k] end,
@@ -8,7 +9,7 @@ local api = {
            watch=function(k,cb) watchers[k]=cb end},
     nowMs=function() return 100000 end,
     formatTime=function() return "Oct 28 · 12:00" end,
-    getConfig=function(k) return k=="enable_clipboard_action" end,
+    getConfig=function(k) return config[k] end,
     fileExists=function() return false end,
     copyToClipboard=noop,
     json={decode=function(v) return v end},
@@ -59,7 +60,17 @@ values['pc.messaging'].pending['a:sms:42']={}
 env.render();assert(not text('panel.sms_send').props.enabled)
 values['pc.messaging'].pending={}
 text('chat.tab_contacts').props.onClick()
+assert(not find(function(n) return n.props.text=='456' end),'Numbers should start collapsed')
+before=#commands
+key('contact-toggle:a:alex').props.onClick()
+assert(#commands==before,'Expanding a contact must not send a phone command')
 assert(text('123') and text('456'))
+key('contact-toggle:a:alex').props.onClick()
+assert(not find(function(n) return n.props.text=='456' end),'Contact should collapse again')
+key('contact-toggle:a:alex').props.onClick()
+text('chat.message').props.onClick()
+assert(key('composer-row:a:sms:new:123'),'Expanded number should open the right recipient')
+text('chat.tab_contacts').props.onClick()
 key('contacts-search:a').props.onChange('unknown')
 assert(text('chat.no_results'))
 text('chat.tab_device').props.onClick()
@@ -112,4 +123,11 @@ assert(#commands==before,'Paging cached history must not refetch it')
 assert(key('message:a:42:71'))
 assert(not find(function(n) return n.props.key=='message:a:42:121' end))
 text('chat.newer_messages').props.onClick();assert(key('message:a:42:121'))
+-- Opening always follows the setting, including after visiting another tab.
+for _,tab in ipairs({'device','contacts','notifications','messages','invalid'}) do
+    config.default_page=tab
+    env.onClose();env.onOpen()
+    local expected=tab=='invalid' and 'messages' or tab
+    assert(text('chat.tab_'..expected).props.selected,'Default page must be honored on every open')
+end
 print('Panel interaction regressions passed')

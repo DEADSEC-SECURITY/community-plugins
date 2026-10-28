@@ -2,14 +2,18 @@
 
 ## Completed
 
-- Python helper unit suite: 10 tests, covering typed message decoding, legacy
+- Python helper unit suite: 12 tests, covering typed message decoding, legacy
   tuples, Unicode, attachments, vCards, multi-number contacts, cache isolation,
   pagination, thread replies, expired notifications, offline actions, and errors.
   vCard coverage includes quoted-printable soft lines, base64 names and legacy charsets.
+  Avatar coverage includes embedded raster decoding, limits, remote URI rejection,
+  private runtime cache permissions, replacement/removal, and fallback without a cache.
 - Mocked Lua model, service, and panel suites; existing panel/service regressions.
   Coverage includes duplicate/out-of-order messages, loaded-message search,
   failed-send draft retention, duplicate sends, device changes, reconnects,
   subscribing before history requests, and late notification snapshots.
+  Panel tests also check every default-page option, invalid-setting fallback,
+  collapsed contact rows, expansion, and selecting a particular phone number.
 - 1,000-contact panel regression: bounded rows, page navigation, full-list search,
   and a single translation-table read per render. Loaded history is also paged
   in both directions without unnecessary backend requests.
@@ -25,6 +29,8 @@
   switching without timeout errors after caching translations and paging rows.
   Decoding the 20 quoted-printable formatted names leaves no raw hex sequences
   in the displayed names; the contact cache itself is unchanged.
+  The cache supplies embedded photos for 32 of these contacts. Native tab
+  switching with avatars produced no image-load errors or callback timeouts.
 - Rollback: removing only the local override symlink restored community 0.2.1;
   restoring the symlink loaded local 0.3.0. Settings file was unchanged, with
   exactly one bridge watcher after restoration.

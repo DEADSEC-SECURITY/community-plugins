@@ -71,6 +71,10 @@
     "unpaired": "Unpaired"
   },
   "settings": {
+    "default_page": {
+      "label": "Default Page",
+      "description": "Choose which tab opens when you open Phone Connect."
+    },
     "battery_display": {
       "description": "Choose whether the bar widget shows the battery icon, percentage, both, or neither.",
       "hidden": "Hidden",
@@ -197,6 +201,9 @@
     "preview": "Preview · Sample data · Phone actions disabled",
     "previous": "Previous",
     "next": "Next",
-    "newer_messages": "Newer messages"
+    "newer_messages": "Newer messages",
+    "expand_contact": "Show phone numbers",
+    "collapse_contact": "Hide phone numbers",
+    "numbers_count": "{count} numbers"
   }
 }

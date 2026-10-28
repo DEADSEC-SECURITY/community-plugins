@@ -29,15 +29,16 @@ noctalia msg panel-toggle icefish/phone-connect:details_floating
 noctalia msg panel-toggle icefish/phone-connect:details_widget
 ```
 
-- **Messages** opens first. Search people, numbers, previews, and already loaded
+- **Messages** opens first by default. Search people, numbers, previews, and already loaded
   messages. Select a conversation to fetch 50 messages; Load older requests the
   next page. New message offers a contact picker and manual number entry.
   History shows up to 50 messages at a time; Newer messages returns through loaded pages.
 - **Notifications** lists active notifications mirrored by KDE Connect. Reply
   appears only when the phone supplies a reply action. Dismiss removes the phone
   notification too. Incoming/missed-call events are retained for this session.
-- **Contacts** searches the phone's cached contacts. Choose among a person's
-  numbers, start a message, or copy a number. Refresh asks KDE Connect to sync.
+- **Contacts** shows compact rows with a cached phone photo or initials. Expand a
+  person to choose among all their numbers, start a message, or copy a number.
+  Refresh asks KDE Connect to sync.
   Results are paged to keep large address books responsive; search covers all contacts.
 - **Device** contains Find phone, Ping, files, clipboard, sharing, media playback,
   volume, avatar/alias editing, pairing, and connection details. Unpair requires
@@ -91,6 +92,7 @@ text from shell output. Noctalia plugin API 24 or newer is required.
 | Device image and name | — | Informational setting; edit them in the Device tab. |
 | Language | en | English / Simplified Chinese; new strings fall back to English. |
 | Panel Placement | attached | Attached, floating center, or below the widget. |
+| Default Page | messages | Open Messages, Notifications, Contacts, or Device whenever the panel opens. |
 
 ## IPC
 
@@ -118,8 +120,16 @@ Results are request-scoped; a successful request does not mean delivery.
 
 All data stays local. The Python helper subscribes to the session D-Bus and reads
 KDE Connect's per-device vCards under `$XDG_DATA_HOME/kpeoplevcard/` (default
-`~/.local/share/kpeoplevcard/`). It writes no files and makes no direct network
-requests. KDE Connect handles phone communication and its own caches.
+`~/.local/share/kpeoplevcard/`). KDE Connect handles phone communication and its
+own caches; the helper makes no direct network requests.
+
+Embedded JPEG/PNG/WebP contact photos (up to 256 KiB each) are decoded into
+`$XDG_RUNTIME_DIR/noctalia-phone-connect/<device hash>/` so native image controls
+can display them. These session files use hashed filenames, private directories
+(0700), and private files (0600). Replaced/removed photos are pruned after a short
+grace period; the runtime directory normally disappears at logout. No contact
+names or numbers are written there. Without a writable runtime directory or an
+embedded supported photo, the row shows initials. Remote photo URLs are never fetched.
 
 Noctalia runs one helper stream plus short-lived helper requests. The host stops
 the stream on reload/disable. Device controls retain their `gdbus`,

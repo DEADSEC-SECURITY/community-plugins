@@ -89,6 +89,19 @@ description_key = "settings.enable_clipboard_action.description"
 default = true
 
 [[setting]]
+key = "default_page"
+type = "select"
+label_key = "settings.default_page.label"
+description_key = "settings.default_page.description"
+default = "messages"
+options = [
+  { value = "messages", label_key = "chat.tab_messages" },
+  { value = "notifications", label_key = "chat.tab_notifications" },
+  { value = "contacts", label_key = "chat.tab_contacts" },
+  { value = "device", label_key = "chat.tab_device" },
+]
+
+[[setting]]
 key = "panel_placement"
 type = "select"
 label_key = "settings.panel_placement.label"

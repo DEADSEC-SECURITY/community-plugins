@@ -37,6 +37,14 @@
             "search": "alex morgan +1 202-555-0100"
           },
           {
+            "id": "sample3",
+            "name": "Casey Rivera",
+            "numbers": [
+              "+1 202-555-0103"
+            ],
+            "search": "casey rivera +1 202-555-0103"
+          },
+          {
             "id": "b",
             "name": "Jamie Chen",
             "numbers": [
@@ -44,6 +52,46 @@
               "+1 202-555-0102"
             ],
             "search": "jamie chen +1 202-555-0101"
+          },
+          {
+            "id": "sample4",
+            "name": "Jordan Kim",
+            "numbers": [
+              "+1 202-555-0104"
+            ],
+            "search": "jordan kim +1 202-555-0104"
+          },
+          {
+            "id": "sample5",
+            "name": "Morgan Lee",
+            "numbers": [
+              "+1 202-555-0105"
+            ],
+            "search": "morgan lee +1 202-555-0105"
+          },
+          {
+            "id": "sample6",
+            "name": "Riley Brooks",
+            "numbers": [
+              "+1 202-555-0106"
+            ],
+            "search": "riley brooks +1 202-555-0106"
+          },
+          {
+            "id": "sample7",
+            "name": "Sam Patel",
+            "numbers": [
+              "+1 202-555-0107"
+            ],
+            "search": "sam patel +1 202-555-0107"
+          },
+          {
+            "id": "sample8",
+            "name": "Taylor Reed",
+            "numbers": [
+              "+1 202-555-0108"
+            ],
+            "search": "taylor reed +1 202-555-0108"
           }
         ],
         "threads": {
@@ -127,5 +175,6 @@
     "pending": {},
     "results": {},
     "error": ""
-  }
+  },
+  "expandedContact": "b"
 }
