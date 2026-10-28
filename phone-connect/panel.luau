@@ -365,27 +365,29 @@ local function deviceView(d)
 	local id, reachable = d.id, d.isPaired and d.isReachable
 	local name = (noctalia.state.get("pc.aliasMap") or {})[id] or d.name
 	local image = (noctalia.state.get("pc.imageMap") or {})[id]
-	local identity = {}
+	local identity, caption = {}, {}
 	local editAction
 	if image and image ~= "" then table.insert(identity, ui.image({ path = image, width = 48, height = 48, radius = 24, fit = "cover",
 		onClick = function() send({ op = "pick_image", device = id }) end })) end
 	if editingName == id then
-		table.insert(identity, ui.input({ key = "alias:" .. id, value = name, flexGrow = 1,
+		table.insert(caption, ui.input({ key = "alias:" .. id, value = name, flexGrow = 1,
 			onChange = function(value) nameValue = value end,
 			onSubmit = function(value) send({ op = "set_alias", device = id, alias = value }); editingName = nil; render() end }))
 		editAction = icon("check", "chat.save", function()
 			send({ op = "set_alias", device = id, alias = nameValue }); editingName = nil; render()
 		end)
 	else
-		table.insert(identity, label(name, { fontSize = 18, fontWeight = "medium", flexGrow = 1, minWidth = 0, maxLines = 2 }))
+		table.insert(caption, label(name, { fontSize = 18, fontWeight = "medium", maxWidth = 240, maxLines = 1, tooltip = name }))
 		editAction = icon("pencil", "chat.rename", function() editingName = id; nameValue = name; render() end)
 	end
-	local connection = {}
-	for _, field in ipairs({ { "IPv4", d.ipv4 }, { "IPv6", d.ipv6 }, { t("panel.type"), d.type } }) do
-		table.insert(connection, label(field[1] .. ": " .. (field[2] or "—"),
-			{ fontSize = 10, color = "on_surface_variant", maxLines = 0 }))
+	local address, family = d.ipv4, "IPv4"
+	if type(address) ~= "string" or not address:match("%S") then address = d.ipv6; family = "IPv6" end
+	if type(address) == "string" and address:match("%S") then
+		address = address:match("^%s*(.-)%s*$")
+		table.insert(caption, label(address, { key = "connection-address:" .. id, fontSize = 10,
+			color = "on_surface_variant", maxLines = 1, tooltip = family .. ": " .. address }))
 	end
-	table.insert(identity, ui.column({ key = "connection:" .. id, flexGrow = 1, minWidth = 0, gap = 2 }, connection))
+	table.insert(identity, ui.row({ key = "identity-caption:" .. id, flexGrow = 1, minWidth = 0, gap = 12, align = "center" }, caption))
 	table.insert(identity, editAction)
 	if d.isPaired then table.insert(identity, icon("link-off", "action.unpair", function() confirmUnpair = id; render() end)) end
 	table.insert(identity, button("chat.photo", "photo", function() send({ op = "pick_image", device = id }) end))

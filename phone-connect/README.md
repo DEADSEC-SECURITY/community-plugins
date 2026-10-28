@@ -41,8 +41,9 @@ noctalia msg panel-toggle icefish/phone-connect:details_widget
   Refresh asks KDE Connect to sync.
   Results are paged to keep large address books responsive; search covers all contacts.
 - **Device** contains Find phone, Ping, files, clipboard, sharing, media playback,
-  volume, avatar/alias editing, and pairing. Connection details appear in small
-  muted text beside the phone name. The Unpair icon sits next to Edit and opens
+  volume, avatar/alias editing, and pairing. The IP address appears on the same
+  line as the phone name in small muted text, preferring IPv4 and falling back
+  to IPv6 when IPv4 is unavailable. The Unpair icon sits next to Edit and opens
   a confirmation in the panel.
 
 The header's layout button switches between the wide two-pane view and compact
