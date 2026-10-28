@@ -6,9 +6,12 @@ The Luau service owns the UI model and consumes newline-delimited JSON events.
 """
 
 import argparse
+import base64
+import binascii
 import json
 import os
 from pathlib import Path
+import quopri
 import re
 import sys
 import time
@@ -64,15 +67,57 @@ def vcard_text(value):
     return re.sub(r"\\([nN,;\\])", lambda m: "\n" if m[1].lower() == "n" else m[1], value)
 
 
-def parse_vcard(text, identifier):
-    # vCard line folding and escaped punctuation are common in Android exports.
-    text = re.sub(r"\r?\n[ \t]", "", text)
-    name, fallback, numbers = "", "", []
+def vcard_lines(text):
+    """Unfold vCard lines, including v2.1 quoted-printable soft line breaks."""
+    current = ""
     for line in text.splitlines():
+        head = current.partition(":")[0].upper()
+        quoted = "ENCODING=QUOTED-PRINTABLE" in head
+        if current and quoted and current.endswith("="):
+            current = current[:-1] + line.lstrip(" \t")
+        elif current and line.startswith((" ", "\t")):
+            current += line[1:]
+        elif current and re.search(r";ENCODING=(?:B|BASE64)(?:;|$)", head) and line and ":" not in line:
+            current += line.strip()
+        else:
+            if current:
+                yield current
+            current = line
+    if current:
+        yield current
+
+
+def vcard_value(head, value):
+    params = {}
+    for param in head.split(";")[1:]:
+        key, sep, item = param.partition("=")
+        if sep:
+            params[key.upper()] = item.strip('"')
+    raw = value.encode("utf-8", errors="surrogateescape")
+    encoding = params.get("ENCODING", "").upper()
+    if encoding == "QUOTED-PRINTABLE":
+        raw = quopri.decodestring(raw)
+    elif encoding in ("B", "BASE64"):
+        try:
+            raw = base64.b64decode(re.sub(rb"\s", b"", raw), validate=True)
+        except (ValueError, binascii.Error):
+            return value  # A malformed contact must not discard the address book.
+    try:
+        return raw.decode(params.get("CHARSET", "utf-8"), errors="replace")
+    except (LookupError, ValueError):
+        return raw.decode("utf-8", errors="replace")
+
+
+def parse_vcard(text, identifier):
+    name, fallback, numbers = "", "", []
+    for line in vcard_lines(text):
         head, sep, value = line.partition(":")
         if not sep:
             continue
         field = head.split(";", 1)[0].split(".")[-1].upper()
+        if field not in ("FN", "N", "TEL"):
+            continue
+        value = vcard_value(head, value)
         if field == "FN":
             name = vcard_text(value)
         elif field == "N":
@@ -97,7 +142,7 @@ def read_contacts(device, data_home=None):
             if path.suffix not in (".vcf", ".vcard") or not path.is_file():
                 continue
             try:
-                contact = parse_vcard(path.read_text(encoding="utf-8", errors="replace"), path.stem)
+                contact = parse_vcard(path.read_text(encoding="utf-8", errors="surrogateescape"), path.stem)
                 if contact:
                     contacts.append(contact)
             except OSError:

@@ -2,9 +2,10 @@
 
 ## Completed
 
-- Python helper unit suite: 8 tests, covering typed message decoding, legacy
+- Python helper unit suite: 10 tests, covering typed message decoding, legacy
   tuples, Unicode, attachments, vCards, multi-number contacts, cache isolation,
   pagination, thread replies, expired notifications, offline actions, and errors.
+  vCard coverage includes quoted-printable soft lines, base64 names and legacy charsets.
 - Mocked Lua model, service, and panel suites; existing panel/service regressions.
   Coverage includes duplicate/out-of-order messages, loaded-message search,
   failed-send draft retention, duplicate sends, device changes, reconnects,
@@ -22,6 +23,8 @@
   switching repeatedly through the tabs without callback timeouts.
 - Live cached contact list (265 contacts with phone numbers): repeated tab
   switching without timeout errors after caching translations and paging rows.
+  Decoding the 20 quoted-printable formatted names leaves no raw hex sequences
+  in the displayed names; the contact cache itself is unchanged.
 - Rollback: removing only the local override symlink restored community 0.2.1;
   restoring the symlink loaded local 0.3.0. Settings file was unchanged, with
   exactly one bridge watcher after restoration.

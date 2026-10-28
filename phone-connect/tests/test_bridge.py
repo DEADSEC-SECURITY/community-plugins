@@ -49,6 +49,24 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(len(bridge.read_contacts("phone_a", directory)), 1)
             self.assertEqual(bridge.read_contacts("phone_b", directory), [])
 
+    def test_vcard_quoted_printable_names_and_soft_lines(self):
+        contact = bridge.parse_vcard('BEGIN:VCARD\r\nVERSION:2.1\r\n'
+            'FN;CHARSET=UTF-8;ENCODING=QUOTED-PRINTABLE:=5A=6F=C3=AB=20=\r\n'
+            '=E6=9D=8E\r\nTEL:123\r\nEND:VCARD', 'quoted')
+        self.assertEqual(contact['name'], 'Zoë 李')
+        self.assertIn('zoë 李', contact['search'])
+        fallback = bridge.parse_vcard('N;ENCODING=QUOTED-PRINTABLE:=4D=6F=72=67=61=6E;=41=6C=65=78;;;\nTEL:123', 'fallback')
+        self.assertEqual(fallback['name'], 'Morgan Alex')
+
+    def test_vcard_base64_and_legacy_charset(self):
+        contact = bridge.parse_vcard('FN;CHARSET="UTF-8";ENCODING=b:Wm/Dqw==\nTEL:123', 'base64')
+        self.assertEqual(contact['name'], 'Zoë')
+        contact = bridge.parse_vcard('FN;CHARSET=ISO-8859-1;ENCODING=QUOTED-PRINTABLE:Andr=E9\nTEL:123', 'latin')
+        self.assertEqual(contact['name'], 'André')
+        contact = bridge.parse_vcard(b'FN;CHARSET=ISO-8859-1:Andr\xe9\nTEL:123'.decode('utf-8', errors='surrogateescape'), 'raw')
+        self.assertEqual(contact['name'], 'André')
+        self.assertIsNotNone(bridge.parse_vcard('FN;ENCODING=B:invalid!\nTEL:123', 'bad'))
+
     def test_number_matching_does_not_guess_country(self):
         self.assertEqual(bridge.normalize_number("+1 (555) 010-1000"), "+15550101000")
         self.assertNotEqual(bridge.normalize_number("5550101000"), "+15550101000")
