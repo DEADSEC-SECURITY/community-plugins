@@ -256,8 +256,24 @@ def read_contacts(device, data_home=None, runtime_dir=None):
     return sorted(contacts, key=lambda c: (c["name"].casefold(), c["id"]))
 
 
+def stream_lines(event):
+    encoded = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) <= 48 * 1024:
+        yield encoded
+        return
+    # Noctalia drops unfinished stream lines over 64 KiB. Large conversation
+    # and contact snapshots need framing; ASCII fragments cannot split UTF-8.
+    encoded = json.dumps(event, ensure_ascii=True, separators=(",", ":"))
+    size = 16 * 1024
+    count = (len(encoded) + size - 1) // size
+    for index in range(count):
+        yield json.dumps({"type": "chunk", "index": index + 1, "count": count,
+                          "data": encoded[index * size:(index + 1) * size]}, separators=(",", ":"))
+
+
 def emit(event):
-    print(json.dumps(event, ensure_ascii=False, separators=(",", ":")), flush=True)
+    for line in stream_lines(event):
+        print(line, flush=True)
 
 
 class Bridge:

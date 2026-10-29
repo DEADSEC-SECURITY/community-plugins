@@ -85,7 +85,7 @@ elseif mode == "panel" then
         end
     end})
     local renders = 0
-    env.panel = {render = function() renders = renders + 1 end, close = noop}
+    env.panel = {render = function() renders = renders + 1 end, close = noop, setNeedsFrameTick = noop}
     assert(loadfile(directory .. "/panel.luau", "t", env))()
     env.onOpen()
     device.mediavolume = 50

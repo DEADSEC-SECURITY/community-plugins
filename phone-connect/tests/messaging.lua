@@ -29,9 +29,12 @@ assert(d.messages["42"] == nil and d.threads["42"] == nil)
 
 -- Exercise the service with queued callbacks, including a switch/reconnect while a send is pending.
 local state, callbacks, streams, tokens = {}, {}, {}, {}
+local publications=0
 local clock = 100
 local api = {
-    state={get=function(k) return state[k] end, set=function(k,v) state[k]=v end},
+    state={get=function(k) return state[k] end, set=function(k,v)
+        state[k]=v;if k=='pc.messaging' then publications=publications+1 end
+    end},
     pluginDir=function() return directory end,
     nowMs=function() return clock*1000 end,
     json={encode=function(v) local key=tostring(#tokens+1); tokens[#tokens+1]=v; return key end,
@@ -48,13 +51,30 @@ local function complete(ok,events)
     return item
 end
 complete(true)
-local function emit(e) streams[1](api.json.encode(e)) end
+local function emit(e) streams[1](api.json.encode(e));service.tick() end
 service.command({op='history',device='a',thread='42'})
 assert(#callbacks==0,'History must wait until the watcher subscribes')
 emit({type='ready'})
 assert(#callbacks==1,'Ready must release deferred history requests')
 complete(true)
 emit({type="capabilities",device="a",connected=true,capabilities={messages=true}})
+local before=publications
+for i=1,700 do
+    local m=message(tostring(i),i,'Sync preview');m.thread=tostring(i)
+    streams[1](api.json.encode({type='message',device='a',message=m}))
+end
+assert(publications==before,'A sync burst must not publish the full history for each message')
+service.tick()
+assert(publications==before+1 and state['pc.messaging'].devices.a.threads['700'],
+    'One tick must publish all messages in the burst')
+local framed=message('framed',701,'Large snapshot');framed.thread='framed'
+local token=api.json.encode({type='threads',device='a',items={framed}})
+streams[1](api.json.encode({type='chunk',index=1,count=2,data=token:sub(1,1)}))
+service.tick()
+assert(not state['pc.messaging'].devices.a.threads.framed,'Incomplete frames must not publish a partial snapshot')
+streams[1](api.json.encode({type='chunk',index=2,count=2,data=token:sub(2)}))
+service.tick()
+assert(state['pc.messaging'].devices.a.threads.framed,'Complete frames must reconstruct and apply the snapshot')
 state['pc.drafts']={['a:sms:42']={text="Keep this",rev=0}}
 local command={op="sms_send",device="a",thread="42",text="Keep this",target="a:sms:42"}
 service.command(command); service.command(command)

@@ -20,7 +20,9 @@ local ui=setmetatable({}, {__index=function(_,kind)
         return {kind=kind,props=props,children=children or {}}
     end
 end})
-local env=setmetatable({noctalia=api,ui=ui,panel={render=function(t) tree=t end,close=noop}},{__index=_G})
+local renders, needsFrame = 0, false
+local env=setmetatable({noctalia=api,ui=ui,panel={render=function(t) tree=t; renders=renders+1 end,close=noop,
+    setNeedsFrameTick=function(value) needsFrame=value end}},{__index=_G})
 local modules={}
 env.require=function(path)
     if not modules[path] then modules[path]=assert(loadfile(directory.."/"..path,"t",env))() end
@@ -44,7 +46,7 @@ end
 local function text(s) return assert(find(function(n) return n.props.text==s end),s) end
 local function key(s) return assert(find(function(n) return n.props.key==s end),s) end
 env.onOpen()
-assert(commands[#commands].op=='sync')
+assert(#commands==0,'Opening populated conversations must not trigger another full sync')
 key('thread:a:42').props.onClick()
 assert(commands[#commands].op=='history' and commands[#commands].start==0)
 local composer=key('composer-row:a:sms:42')
@@ -93,14 +95,14 @@ assert(find(function(n) return n.props.tooltip=='action.unpair' end)).props.onCl
 assert(#commands==before,'Preview must not send commands')
 env.onClose()
 -- A real address book must not create an unbounded native tree or repeatedly
--- decode the shared translation table. This caused native callback timeouts.
+-- decode shared snapshots. This caused native callback timeouts.
 for i=2,1000 do
     table.insert(d.contacts,{id=tostring(i),name='Person '..i,numbers={tostring(i)},search='person '..i})
 end
 env.onOpen();env.onIpc('view',{tab='contacts'})
 key('contacts-search:a').props.onChange('')
 reads['pc.trTable']=0;env.render()
-assert(reads['pc.trTable']==1,'Translations must be decoded once per render')
+assert(reads['pc.trTable']==0,'Translations must reuse the watched snapshot')
 assert(text('1 / 40'))
 assert(not find(function(n) return n.props.key=='contact:a:26' end))
 text('chat.next').props.onClick()
@@ -117,10 +119,10 @@ end
 env.onIpc('view',{tab='messages',compact=false})
 key('thread:a:42').props.onClick()
 assert(key('message:a:42:121'))
-assert(not find(function(n) return n.props.key=='message:a:42:71' end))
+assert(not find(function(n) return n.props.key=='message:a:42:96' end))
 before=#commands;text('chat.load_older').props.onClick()
 assert(#commands==before,'Paging cached history must not refetch it')
-assert(key('message:a:42:71'))
+assert(key('message:a:42:96'))
 assert(not find(function(n) return n.props.key=='message:a:42:121' end))
 text('chat.newer_messages').props.onClick();assert(key('message:a:42:121'))
 -- Opening always follows the setting, including after visiting another tab.
@@ -130,4 +132,44 @@ for _,tab in ipairs({'device','contacts','notifications','messages','invalid'}) 
     local expected=tab=='invalid' and 'messages' or tab
     assert(text('chat.tab_'..expected).props.selected,'Default page must be honored on every open')
 end
+-- A populated phone must not deserialize shared history on each keystroke.
+-- Watch callbacks receive replacement snapshots (unlike the mutable mock above).
+local populated=Model.device();populated.connected=true;populated.capabilities={messages=true}
+populated.contacts={{name='Searchable person',numbers={'555'}}}
+for i=1,2000 do
+    Model.reduce(populated,{type='message',message={id=tostring(i),thread=tostring(i),
+        date=i,body='Conversation '..i,addresses={'555'}}})
+end
+local replacement={devices={a=populated},pending={},results={}}
+values['pc.messaging']=replacement
+local beforeRenders=renders
+watchers['pc.messaging'](replacement)
+watchers['pc.devices'](values['pc.devices'])
+watchers['pc.trTable']({['chat.search_scope']='Replacement translations'})
+assert(renders==beforeRenders and needsFrame,'A burst of state updates should schedule a single paint')
+env.onFrameTick()
+assert(renders==beforeRenders+1 and not needsFrame,'Paint must consume the latest snapshots and stop frame ticks')
+env.onIpc('view',{tab='messages',compact=false})
+text('Replacement translations')
+reads['pc.messaging']=0;reads['pc.trTable']=0
+for _,query in ipairs({'searchable','missing','Conversation 1999','555',''}) do
+    key('thread-search:a').props.onChange(query)
+    if query=='missing' then text('chat.no_results') end
+    if query=='Conversation 1999' then key('thread:a:1999') end
+end
+assert(reads['pc.messaging']==0 and reads['pc.trTable']==0,'Typing must not reread shared message or translation state')
+key('thread:a:2000').props.onClick()
+local matched, originalMatches=0,Model.matches
+Model.matches=function(...) matched=matched+1;return originalMatches(...) end
+env.onIpc('view',{compact=true})
+assert(matched==0,'A compact thread must not search or build its hidden conversation list')
+Model.matches=originalMatches
+env.onIpc('view',{compact=false})
+-- Changes while closed should be ready for the next open without scheduling frames.
+env.onClose();beforeRenders=renders
+replacement.devices={}
+watchers['pc.messaging'](replacement)
+assert(not needsFrame and renders==beforeRenders)
+env.onOpen();text('chat.no_threads')
+assert(commands[#commands].op=='sync','An empty conversation cache must still request synchronization')
 print('Panel interaction regressions passed')

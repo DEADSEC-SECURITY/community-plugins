@@ -2,8 +2,13 @@
 -- Messages-first panel. Drafts and preferences live in shared memory, never on disk.
 local Model = require("./messaging-model.luau")
 local preview = nil -- Read-only synthetic data, only set by the preview IPC event.
--- state.get decodes a fresh copy. Read translations once per render, not once
--- per label: doing that for a phone's contact list exhausts the host CPU budget.
+-- state.get decodes a fresh copy. Keep the snapshots delivered by state.watch
+-- so typing and navigation never decode the entire message/contact history.
+local shared = {}
+-- Native tree construction also counts against the 25 ms callback budget.
+-- A wide panel renders both lists; keep each visible page small. The backend
+-- still fetches history in batches of 50, independent of these display pages.
+local messagePageSize, threadPageSize = 25, 25
 local translations = {}
 local function t(key) return translations[key] or key end
 local function send(cmd)
@@ -95,7 +100,7 @@ local function pageRange(view, field, count, size)
 end
 
 local function header(devices, order, d)
-	local aliases = noctalia.state.get("pc.aliasMap") or {}
+	local aliases = shared["pc.aliasMap"] or {}
 	local names, selected = {}, 1
 	for index, id in ipairs(order) do
 		local device = devices[id]
@@ -249,16 +254,16 @@ local function threadView(id, d, state)
 		if message then
 			local messages = Model.sorted(d.messages[view.thread])
 			if #messages == 0 then messages = { message } end
-			local offset = math.min(view.messageOffset or 0, math.floor((#messages - 1) / 50) * 50)
+			local offset = math.min(view.messageOffset or 0, math.floor((#messages - 1) / messagePageSize) * messagePageSize)
 			table.insert(bubbles, button(h and h.loading and "chat.loading" or "chat.load_older", "history", function()
-				view.messageOffset = offset + 50; saveView()
-				if #messages <= offset + 50 then
+				view.messageOffset = offset + messagePageSize; saveView()
+				if #messages <= offset + messagePageSize then
 					send({ op = "history", device = id, thread = view.thread, start = #Model.sorted(d.messages[view.thread]) })
 				end
 				render()
 			end, { enabled = d.connected and not (h and h.loading), variant = "ghost" }))
 			if h and (h.error or h.incomplete) then table.insert(bubbles, note(t("chat.history_hint"), h.error)) end
-			for i = math.min(offset + 50, #messages), offset + 1, -1 do
+			for i = math.min(offset + messagePageSize, #messages), offset + 1, -1 do
 				local item = messages[i]
 				local content = {
 					label(item.body or "", { fontSize = 13, maxLines = 0 }),
@@ -272,7 +277,7 @@ local function threadView(id, d, state)
 					gap = 6, padding = 12, radius = 10, fill = item.outgoing and "primary/0.12" or "surface/0.65" }, content))
 			end
 			if offset > 0 then table.insert(bubbles, button("chat.newer_messages", "arrow-down", function()
-				view.messageOffset = math.max(0, offset - 50); saveView(); render()
+				view.messageOffset = math.max(0, offset - messagePageSize); saveView(); render()
 			end, { variant = "ghost" })) end
 		end
 		table.insert(kids, ui.scroll({ key = "history:" .. id .. ":" .. tostring(view.thread or view.recipient),
@@ -286,11 +291,12 @@ end
 
 local function messagesView(id, d, state)
 	local view, rows = viewFor(id), {}
+	if preferences.compact and view.showThread then return threadView(id, d, state) end
 	local matches = {}
 	for _, thread in ipairs(Model.sorted(d.threads)) do
 		if Model.matches(d, thread, view.search) then table.insert(matches, thread) end
 	end
-	local first, last, pager, page = pageRange(view, "threadPage", #matches, 50)
+	local first, last, pager, page = pageRange(view, "threadPage", #matches, threadPageSize)
 	for i = first, last do
 		local thread = matches[i]
 		table.insert(rows, ui.column({
@@ -315,7 +321,6 @@ local function messagesView(id, d, state)
 	table.insert(list, ui.scroll({ key = "threads:" .. id .. ":" .. page .. ":" .. (view.search or ""), flexGrow = 1, gap = 8 }, rows))
 	if pager then table.insert(list, pager) end
 	if preferences.compact then
-		if view.showThread then return threadView(id, d, state) end
 		return ui.column({ flexGrow = 1, gap = 10 }, list)
 	end
 	return ui.row({ flexGrow = 1, gap = 16, align = "stretch" }, {
@@ -363,8 +368,8 @@ end
 
 local function deviceView(d)
 	local id, reachable = d.id, d.isPaired and d.isReachable
-	local name = (noctalia.state.get("pc.aliasMap") or {})[id] or d.name
-	local image = (noctalia.state.get("pc.imageMap") or {})[id]
+	local name = (shared["pc.aliasMap"] or {})[id] or d.name
+	local image = (shared["pc.imageMap"] or {})[id]
 	local identity, caption = {}, {}
 	local editAction
 	if image and image ~= "" then table.insert(identity, ui.image({ path = image, width = 48, height = 48, radius = 24, fit = "cover",
@@ -422,13 +427,14 @@ end
 
 function render()
 	if not opened then return end
-	translations = noctalia.state.get("pc.trTable") or {}
-	local devices, order = noctalia.state.get("pc.devices") or {}, noctalia.state.get("pc.order") or {}
-	local id = noctalia.state.get("pc.selected")
+	panel.setNeedsFrameTick(false)
+	translations = shared["pc.trTable"] or {}
+	local devices, order = shared["pc.devices"] or {}, shared["pc.order"] or {}
+	local id = shared["pc.selected"]
 	if preview then devices = preview.devices; order = preview.order; id = preview.selected end
 	if not id or not devices[id] then id = order[1] end
 	local device = id and devices[id]
-	local state = noctalia.state.get("pc.messaging") or { devices = {}, pending = {}, results = {} }
+	local state = shared["pc.messaging"] or { devices = {}, pending = {}, results = {} }
 	if preview then state = preview.messaging end
 	local d = (id and state.devices[id]) or Model.device()
 	local body, tabs = { header(devices, order, device) }, {}
@@ -460,14 +466,22 @@ function onOpen(_context)
 	opened = true
 	local defaultPage = noctalia.getConfig("default_page")
 	preferences.tab = (defaultPage == "device" or defaultPage == "contacts" or defaultPage == "notifications") and defaultPage or "messages"
-	local id = noctalia.state.get("pc.selected") or (noctalia.state.get("pc.order") or {})[1]
-	if id then sync(id) end
+	local id = shared["pc.selected"] or (shared["pc.order"] or {})[1]
+	local state = shared["pc.messaging"]
+	local d = state and state.devices[id]
+	-- The subscribed service keeps loaded conversations current. Re-requesting
+	-- every thread on each open creates a large, redundant signal burst.
+	if id and (not d or not next(d.threads)) then sync(id) end
 	render()
 end
 function onClose()
 	opened = false; confirmUnpair = nil; preview = nil
+	panel.setNeedsFrameTick(false)
 	if previewPreferences then preferences = previewPreferences; previewPreferences = nil end
 	saveView()
+end
+function onFrameTick()
+	render()
 end
 -- View IPC drives native layout tests without simulating desktop input.
 -- Preview data never enters the service, and all phone commands are blocked.
@@ -488,9 +502,19 @@ function onIpc(event, payload)
 			preferences.tab = value.tab
 		end
 		if type(value.compact) == "boolean" then preferences.compact = value.compact end
+		if type(value.search) == "string" then
+			local id = preview and preview.selected or shared["pc.selected"]
+			if id then viewFor(id).search = value.search; viewFor(id).threadPage = 1; saveView() end
+		end
 	end
 	render()
 end
 for _, key in ipairs({ "pc.devices", "pc.order", "pc.selected", "pc.backend", "pc.messaging", "pc.trTable", "pc.aliasMap", "pc.imageMap" }) do
-	noctalia.state.watch(key, render)
+	noctalia.state.watch(key, function(value)
+		shared[key] = value
+		-- A sync emits many updates. Paint the newest snapshot once on the next
+		-- frame instead of rebuilding the native tree for every signal.
+		if opened and not preview then panel.setNeedsFrameTick(true) end
+	end)
+	shared[key] = noctalia.state.get(key)
 end

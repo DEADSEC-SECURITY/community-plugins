@@ -7,9 +7,12 @@ function M.start(api)
 	local generation, lastHeartbeat, starting = 0, 0, false
 	local ready, deferred, command = false, {}, nil
 	local bridgeError = ""
+	local dirty = false
+	local chunks, chunkCount = {}, 0
 	local helper = api.pluginDir() .. "/bridge.py"
 	local function now() return os.time() end
 	local function publish()
+		dirty = false
 		api.state.set("pc.messaging", { devices = data, pending = pending, results = results, error = bridgeError })
 	end
 	local function get(id)
@@ -46,7 +49,11 @@ function M.start(api)
 				end
 			end
 		elseif e.type == "error" then bridgeError = e.message or "Bridge failed" end
-		publish()
+		-- Conversation sync can emit hundreds of signals. Publish their latest
+		-- combined state on the service tick, rather than serializing and making
+		-- every panel decode the entire history once per message. Commands still
+		-- publish pending/results immediately so sends cannot be duplicated.
+		dirty = true
 	end
 	local function decode(raw)
 		local ok, value = pcall(api.json.decode, raw or "")
@@ -56,6 +63,7 @@ function M.start(api)
 	local function launch()
 		if starting then return end
 		starting = true; ready = false
+		chunks = {}; chunkCount = 0
 		local launched = api.runAsync({ "python3", helper, "check" }, function(res)
 			starting = false
 			local result = decode(res and res.stdout)
@@ -66,6 +74,16 @@ function M.start(api)
 			local quoted = "'" .. helper:gsub("'", "'\\''") .. "'"
 			local ok = api.runStream("exec python3 -u " .. quoted .. " watch", function(line)
 				local e = decode(line)
+				if e and e.type == "chunk" then
+					if e.index == 1 then chunks = {}; chunkCount = e.count end
+					if e.index ~= #chunks + 1 or e.count ~= chunkCount or type(e.data) ~= "string" then
+						chunks = {}; chunkCount = 0; return
+					end
+					table.insert(chunks, e.data)
+					if #chunks < chunkCount then return end
+					e = decode(table.concat(chunks))
+					chunks = {}; chunkCount = 0
+				end
 				if e then event(e) end
 			end)
 			if not ok then bridgeError = "Could not start the KDE Connect bridge" end
@@ -166,7 +184,7 @@ function M.start(api)
 				end
 			end
 		end
-		if changed then publish() end
+		if changed or dirty then publish() end
 		if now() - lastHeartbeat > 35 and not starting then
 			lastHeartbeat = now()
 			api.processMatches(function(running)

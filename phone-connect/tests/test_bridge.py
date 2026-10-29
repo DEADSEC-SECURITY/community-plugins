@@ -1,5 +1,6 @@
 import importlib.util
 import base64
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -17,6 +18,19 @@ class Variant:
 
 
 class BridgeTests(unittest.TestCase):
+    def test_large_snapshot_stream_framing(self):
+        event = {"type": "threads", "device": "a", "items": [
+            {"id": str(i), "body": "Multiline\n你好 👋 \\\"" * 30} for i in range(700)]}
+        lines = list(bridge.stream_lines(event))
+        self.assertGreater(len(lines), 1)
+        chunks = [json.loads(line) for line in lines]
+        self.assertTrue(all(len(line.encode("utf-8")) < 64 * 1024 for line in lines))
+        self.assertEqual([c["index"] for c in chunks], list(range(1, len(chunks) + 1)))
+        self.assertTrue(all(c["count"] == len(chunks) for c in chunks))
+        self.assertEqual(json.loads("".join(c["data"] for c in chunks)), event)
+        small = {"type": "notification_removed", "id": "1"}
+        self.assertEqual([json.loads(line) for line in bridge.stream_lines(small)], [small])
+
     def test_nested_message_and_attachments(self):
         value = Variant((1, "Hello 👋\n你好 — O'Brien", [Variant(("+1 (555) 010-0100",))],
                          123456789, 2, 0, 42, 7, 3, [Variant((1, "image/png", "", "x"))]))
