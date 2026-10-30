@@ -30,9 +30,10 @@ noctalia msg panel-toggle icefish/phone-connect:details_widget
 ```
 
 - **Messages** opens first by default. Search people, numbers, previews, and already loaded
-  messages. Select a conversation to fetch 50 messages; Load older requests the
-  next page. New message offers a contact picker and manual number entry.
-  History shows up to 50 messages at a time; Newer messages returns through loaded pages.
+  messages. Select a conversation to fetch 50 messages. History displays 25
+  messages at a time; Load older traverses cached pages before requesting more.
+  Newer messages returns through loaded pages. New message offers a contact
+  picker and manual number entry.
 - **Notifications** lists active notifications mirrored by KDE Connect. Reply
   appears only when the phone supplies a reply action. Dismiss removes the phone
   notification too. Incoming/missed-call events are retained for this session.
@@ -157,12 +158,10 @@ noctalia plugins lint phone-connect
 python3 .github/workflows/scripts/validate-plugins.py
 ```
 
-The automated tests use synthetic data and never send messages or phone actions.
-See [TESTING.md](TESTING.md) for recorded results and remaining live checks.
-Test live synchronization, contact search, disconnect/reconnect, and all three
-panel placements. For sending/reply/dismiss checks, use a chosen test conversation
-and verify the result on the phone. Test long names, multiline/Unicode content,
-keyboard focus, increased display scaling, compact mode, and failed sends.
+See [DEVELOPMENT.md](DEVELOPMENT.md) for the module map, state ownership, helper
+protocol and formatting commands. The automated tests use synthetic data and
+never send messages or phone actions. [TESTING.md](TESTING.md) records coverage,
+native checks and the remaining live verification checklist.
 
 For screenshots with sample data, open the panel, then send the bundled fixture:
 

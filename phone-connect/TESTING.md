@@ -1,70 +1,93 @@
-# 0.3.0 verification
+# Phone Connect verification
 
-## Completed
+## Automated checks
 
-- Python helper unit suite: 13 tests, covering typed message decoding, legacy
-  tuples, Unicode, attachments, vCards, multi-number contacts, cache isolation,
-  pagination, thread replies, expired notifications, offline actions, and errors.
-  vCard coverage includes quoted-printable soft lines, base64 names and legacy charsets.
-  Avatar coverage includes embedded raster decoding, limits, remote URI rejection,
-  private runtime cache permissions, replacement/removal, and fallback without a cache.
-  Large Unicode snapshots are framed into lines below the host's 64 KiB limit
-  and reconstructed without altering their contents.
-- Mocked Lua model, service, and panel suites; existing panel/service regressions.
-  Coverage includes duplicate/out-of-order messages, loaded-message search,
-  failed-send draft retention, duplicate sends, device changes, reconnects,
-  subscribing before history requests, and late notification snapshots.
-  Panel tests also check every default-page option, invalid-setting fallback,
-  collapsed contact rows, expansion, and selecting a particular phone number.
-- 1,000-contact panel regression: bounded rows, page navigation, full-list search,
-  and reuse of the watched translation snapshot. Loaded history is also paged
-  in both directions without unnecessary backend requests.
-- 2,000-conversation panel regression: search by contact name, number and message
-  text without rereading shared message state; replacement watch snapshots,
-  coalescing update bursts into one frame, and updates while the panel is closed.
-  Service tests verify that a 700-message sync burst publishes once per tick,
-  pending send state remains immediate, and incomplete snapshot frames are not applied.
-- Repository validation: 299 manifests passed. Plugin lint: no errors; the
-  existing `migrated_notice` unused-setting warning remains.
-- Native Noctalia 5.4.0 on Hyprland, KDE Connect 26.08.2, 1.333 display scaling.
-  All four tabs, wide/compact layouts, and the compact composer were inspected.
-  Screenshots use synthetic data with phone actions disabled.
-- All three panel entries passed native open/preview/compact/close smoke checks.
-- Native stress test: 302 contacts, 102 conversations, and 102 loaded messages,
-  switching repeatedly through the tabs without callback timeouts.
-- Live cached contact list (265 contacts with phone numbers): repeated tab
-  switching without timeout errors after caching translations and paging rows.
-  Decoding the 20 quoted-printable formatted names leaves no raw hex sequences
-  in the displayed names; the contact cache itself is unchanged.
-  The cache supplies embedded photos for 32 of these contacts. Native tab
-  switching with avatars produced no image-load errors or callback timeouts.
-- Rollback: removing only the local override symlink restored community 0.2.1;
-  restoring the symlink loaded local 0.3.0. Settings file was unchanged, with
-  exactly one bridge watcher after restoration.
-- On October 29, KDE Connect supplied 700 conversations and 13 active
-  notifications. Opening Messages and typing previously exceeded the host's
-  callback budget because every render decoded the full shared state again.
-  The panel now retains watch-delivered snapshots, coalesces state updates, and
-  renders 25 conversation/message rows at a time (history requests remain 50).
-  The service batches incoming signals and opening populated conversations
-  reuses the subscribed cache. All three placements passed live checks in wide
-  and compact mode: nine open/close cycles, 90 search changes and 36 tab changes,
-  with no new callback timeouts.
+Run from the repository root:
 
-## Still requiring live verification
+```sh
+python3 -m unittest discover -s phone-connect/tests -p 'test_*.py'
+lua phone-connect/tests/messaging.lua phone-connect
+lua phone-connect/tests/panel.lua phone-connect
+lua phone-connect/tests/regressions.lua phone-connect service
+lua phone-connect/tests/regressions.lua phone-connect panel
+noctalia plugins lint phone-connect
+python3 .github/workflows/scripts/validate-plugins.py
+git diff --check
+```
 
-The phone reports the required plugins as available, and the user reports that
-permissions should be enabled. Contacts, conversations and notifications now
-load. The caches were empty during the initial October 28 inspection but were
-populated on October 29. Display and search have been checked against this live
-data; the actions below still need confirmation on the phone.
+The suites use synthetic data and mocked process/D-Bus interfaces. They never
+send SMS messages, dismiss notifications, or change phone settings.
 
-- Receive/send an SMS with a user-chosen test recipient; confirm on the phone.
-- Load and verify actual conversation history and older pages.
-- Reply to and dismiss an actual mirrored notification; confirm on the phone.
-- Phone disconnect/reconnect, incoming/missed calls, and daemon restart with
-  nonempty message/notification caches.
-- Manual keyboard focus, scrolling and composing; higher UI/font scaling and
-  all placements under the user's preferred shell settings.
+| Suite | Coverage |
+|-------|----------|
+| `test_bridge.py` | Current and legacy typed message tuples, Unicode, attachments, pagination, thread replies, expired notifications, offline actions and sanitized errors. |
+| `test_bridge.py` contacts | Folded vCards, quoted-printable soft lines, base64 names, legacy charsets, multiple numbers and device-scoped caches. Embedded photos cover raster validation, size limits, remote URI rejection, private runtime files, replacement/removal and fallback. |
+| `test_bridge.py` transport | Large Unicode watch events reconstruct from bounded stream frames. Large one-shot request replies remain a single JSON object. |
+| `messaging.lua` | Duplicate/out-of-order messages, loaded-message search, failed-send draft retention, duplicate sends, device changes, reconnection, subscription ordering and late notification snapshots. A 700-message signal burst publishes once per tick; pending sends publish immediately; incomplete frames are discarded. |
+| `panel.lua` | Default-page options and fallback, collapsed/expanded contacts, number selection, inline device address, compact navigation and bounded history rendering. Large fixtures cover 1,000 contacts and 2,000 conversations, full-cache search, watched snapshot reuse and frame-coalesced updates. |
+| `regressions.lua` | Existing device controls, media interactions, persistence and panel behavior. |
 
-Keep the pull request as a draft until the required live checks pass.
+All 14 Python tests and the Lua suites pass. Repository validation passes for
+299 manifests. Plugin lint reports no errors and one existing unused-setting
+warning for `migrated_notice`.
+
+## Completed native checks
+
+Environment: Noctalia 5.4.0, KDE Connect 26.08.2, Hyprland and 1.333 display scale.
+
+- All four tabs, the compact composer, wide/compact layouts and all three panel
+  placements were inspected with synthetic preview data. The screenshots in
+  `screenshots/` contain only sample content.
+- A synthetic stress fixture with 302 contacts, 102 conversations and 102 loaded
+  messages allowed repeated tab switching without callback timeouts.
+- The live contact cache supplied 265 contacts with phone numbers and 32 embedded
+  photos. Twenty quoted-printable names decoded without raw hex sequences in
+  displayed names. Tab switching produced no image-load errors or timeouts.
+- With 700 cached conversations and 13 active notifications, all three
+  placements passed wide/compact checks: nine open/close cycles, 90 search
+  changes and 36 tab changes, with no new callback timeouts. Conversation search
+  and rendering used retained watch snapshots and bounded display pages.
+- Removing only the local override symlink restored community version 0.2.1.
+  Restoring the symlink loaded local 0.3.0. The settings file remained unchanged,
+  and exactly one bridge watcher ran after restoration.
+
+## Live verification checklist
+
+Contacts, conversation summaries and active notifications load from KDE Connect.
+These display checks do not verify SMS delivery or notification actions. The
+following checks remain unverified on the phone:
+
+- [ ] Receive an SMS and verify that its conversation and preview update.
+- [ ] Send an SMS to a designated test recipient and confirm it on the phone.
+- [ ] Open a real conversation and verify its history and older pages.
+- [ ] Reply to an app notification that supplies a reply action; verify the reply.
+- [ ] Dismiss a mirrored notification and confirm its removal on the phone.
+- [ ] Disconnect/reconnect the phone with populated caches and verify recovery.
+- [ ] Restart the KDE Connect daemon and verify that subscriptions recover.
+- [ ] Observe incoming and missed-call events while the plugin is running.
+- [ ] Check keyboard focus, scrolling and multiline composing in every placement
+  at increased display and font scaling.
+
+## Layout and preview checks
+
+Open a panel and load the bundled synthetic fixture:
+
+```sh
+noctalia msg panel-open icefish/phone-connect:details
+noctalia msg plugin icefish/phone-connect:details all preview "$(cat phone-connect/tests/preview.json)"
+noctalia msg plugin icefish/phone-connect:details all view '{"tab":"notifications","compact":false}'
+```
+
+Repeat with `details_floating` and `details_widget`. The `view` event accepts
+`tab` (`messages`, `notifications`, `contacts`, `device`), `compact` and `search`.
+Preview blocks phone commands, uses separate view preferences, and ends when
+the panel closes.
+
+Check long names, multiple phone numbers, Unicode and multiline content, empty
+lists and large lists. Navigation and the composer should stay visible while
+lists scroll; action labels should stay readable. Switch layouts, tabs and
+devices, then close/reopen the panel to verify selection and draft retention.
+Use preview fixtures for screenshots to avoid including personal content.
+
+See [DEVELOPMENT.md](DEVELOPMENT.md) for formatter checks and the implementation
+invariants behind these tests.

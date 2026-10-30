@@ -1,12 +1,5 @@
-# Noctalia v5 plugin manifest for Phone Connect (KDE Connect backend only)
-# Plugin system is beta; APIs may change before v5 stable.
-#
+# Phone Connect uses KDE Connect for device communication.
 # API 24: modules, chat scrolling and argument-array subprocess calls.
-#
-# Status: KDE Connect only. Valent backend is intentionally out of scope for
-# now, but the service entry (service.luau) is written as a swappable backend
-# owner that publishes state to UI entries, so Valent can replace its internals
-# later without UI changes.
 
 id = "icefish/phone-connect"
 name = "Phone Connect"

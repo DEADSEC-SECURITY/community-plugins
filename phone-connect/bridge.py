@@ -2,7 +2,8 @@
 """KDE Connect D-Bus adapter. JSON on stdout; no persistent message archive.
 
 watch subscribes before taking snapshots. request performs one explicit operation.
-The Luau service owns the UI model and consumes newline-delimited JSON events.
+The Luau service owns the UI model. Watch mode emits framed JSON events;
+request and check modes return one JSON object followed by process exit.
 Embedded contact photos are decoded into a private, session-only runtime cache.
 """
 
@@ -12,14 +13,14 @@ import binascii
 import hashlib
 import json
 import os
-from pathlib import Path
 import quopri
 import re
 import sys
 import tempfile
 import time
-from urllib.parse import unquote
 import xml.etree.ElementTree as ET
+from pathlib import Path
+from urllib.parse import unquote
 
 SERVICE = "org.kde.kdeconnect"
 ROOT = "/modules/kdeconnect"
@@ -41,16 +42,23 @@ def unpack(value):
 
 
 def normalize_number(number):
+    """Normalize contact-cache numbers without guessing international prefixes."""
     number = unquote(str(number).removeprefix("tel:"))
     # Do not guess country codes or match ambiguous number suffixes.
     return re.sub(r"[\s().-]", "", number).casefold()
 
 
 def decode_message(value):
+    """Convert KDE Connect's 8-, 9- or 10-field message tuple to a named record.
+
+    String IDs survive JSON transport without integer precision loss. Dates are
+    milliseconds since the epoch. Outgoing includes sent, draft, outbox, failed
+    and queued Android message types; it does not imply successful delivery.
+    """
     record = unpack(value)
     if not isinstance(record, list) or len(record) not in (8, 9, 10):
         raise ValueError("Unsupported KDE Connect message format")
-    event, body, addresses, date, kind, read, thread, uid = record[:8]
+    event, body, addresses, date, kind, read, thread, message_id = record[:8]
     if not isinstance(body, str) or not isinstance(addresses, list):
         raise ValueError("Invalid KDE Connect message")
     numbers = []
@@ -58,9 +66,14 @@ def decode_message(value):
         if isinstance(address, list) and address and isinstance(address[0], str):
             numbers.append(address[0])
     return {
-        "id": str(uid), "thread": str(thread), "body": body,
-        "addresses": numbers, "date": int(date), "type": int(kind),
-        "read": bool(read), "outgoing": int(kind) in (2, 3, 4, 5, 6),
+        "id": str(message_id),
+        "thread": str(thread),
+        "body": body,
+        "addresses": numbers,
+        "date": int(date),
+        "type": int(kind),
+        "read": bool(read),
+        "outgoing": int(kind) in (2, 3, 4, 5, 6),
         "attachments": len(record[9]) if len(record) > 9 else 0,
         "subId": str(record[8]) if len(record) > 8 else "-1",
         "event": int(event),
@@ -68,6 +81,7 @@ def decode_message(value):
 
 
 def vcard_text(value):
+    """Unescape vCard text delimiters after transfer-encoding decoding."""
     return re.sub(r"\\([nN,;\\])", lambda m: "\n" if m[1].lower() == "n" else m[1], value)
 
 
@@ -81,7 +95,12 @@ def vcard_lines(text):
             current = current[:-1] + line.lstrip(" \t")
         elif current and line.startswith((" ", "\t")):
             current += line[1:]
-        elif current and re.search(r";ENCODING=(?:B|BASE64)(?:;|$)", head) and line and ":" not in line:
+        elif (
+            current
+            and re.search(r";ENCODING=(?:B|BASE64)(?:;|$)", head)
+            and line
+            and ":" not in line
+        ):
             current += line.strip()
         else:
             if current:
@@ -92,6 +111,7 @@ def vcard_lines(text):
 
 
 def vcard_value(head, value):
+    """Decode a property's transfer encoding and charset with a per-value fallback."""
     params = {}
     for param in head.split(";")[1:]:
         key, sep, item = param.partition("=")
@@ -132,6 +152,7 @@ def photo_bytes(head, value):
 
 
 def photo_extension(raw):
+    """Return the supported raster extension from content, never a supplied path."""
     if raw.startswith(b"\xff\xd8\xff"):
         return ".jpg"
     if raw.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -142,6 +163,7 @@ def photo_extension(raw):
 
 
 def photo_directory(device, runtime_dir=None, create=True):
+    """Find or create a private session cache for one device; return None on failure."""
     runtime = runtime_dir or os.environ.get("XDG_RUNTIME_DIR")
     if not runtime:
         return None
@@ -149,7 +171,9 @@ def photo_directory(device, runtime_dir=None, create=True):
     try:
         if not root.is_dir() or root.stat().st_uid != os.getuid():
             return None
-        directory = root / "noctalia-phone-connect" / hashlib.sha256(device.encode()).hexdigest()[:24]
+        directory = (
+            root / "noctalia-phone-connect" / hashlib.sha256(device.encode()).hexdigest()[:24]
+        )
         if not create and not directory.is_dir():
             return None
         for folder in (directory.parent, directory):
@@ -163,6 +187,7 @@ def photo_directory(device, runtime_dir=None, create=True):
 
 
 def cache_photo(directory, raw):
+    """Atomically store a photo by content hash and return its local image path."""
     if directory is None:
         return None
     path = directory / (hashlib.sha256(raw).hexdigest() + photo_extension(raw))
@@ -186,6 +211,11 @@ def cache_photo(directory, raw):
 
 
 def parse_vcard(text, identifier):
+    """Return one contact with distinct phone numbers, or None if it has no number.
+
+    Embedded photo bytes are temporary parser output. read_contacts replaces
+    them with a native-readable cache path before emitting the contact.
+    """
     name, fallback, numbers, photo = "", "", [], None
     for line in vcard_lines(text):
         head, sep, value = line.partition(":")
@@ -209,14 +239,25 @@ def parse_vcard(text, identifier):
     if not numbers:
         return None
     name = name or fallback or numbers[0]
-    contact = {"id": identifier, "name": name, "numbers": numbers,
-               "search": (name + " " + " ".join(numbers) + " " + " ".join(map(normalize_number, numbers))).casefold()}
+    contact = {
+        "id": identifier,
+        "name": name,
+        "numbers": numbers,
+        "search": (
+            name + " " + " ".join(numbers) + " " + " ".join(map(normalize_number, numbers))
+        ).casefold(),
+    }
     if photo:
         contact["photo"] = photo
     return contact
 
 
 def read_contacts(device, data_home=None, runtime_dir=None):
+    """Read KDE Connect's vCards and maintain only the derived runtime photo cache.
+
+    Contact files are never modified. Cache/write failures degrade to initials;
+    concurrent synchronization may replace a vCard between listing and reading.
+    """
     base = Path(data_home or os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share")))
     directory = base / "kpeoplevcard" / ("kdeconnect-" + device)
     contacts = []
@@ -227,7 +268,9 @@ def read_contacts(device, data_home=None, runtime_dir=None):
             if path.suffix not in (".vcf", ".vcard") or not path.is_file():
                 continue
             try:
-                contact = parse_vcard(path.read_text(encoding="utf-8", errors="surrogateescape"), path.stem)
+                contact = parse_vcard(
+                    path.read_text(encoding="utf-8", errors="surrogateescape"), path.stem
+                )
                 if contact:
                     raw_photo = contact.pop("photo", None)
                     if raw_photo:
@@ -249,7 +292,11 @@ def read_contacts(device, data_home=None, runtime_dir=None):
             cached = []
         for path in cached:
             try:
-                if re.fullmatch(r"[0-9a-f]{64}\.(jpg|png|webp)", path.name) and path.name not in retained and path.stat().st_mtime < time.time() - 60:
+                if (
+                    re.fullmatch(r"[0-9a-f]{64}\.(jpg|png|webp)", path.name)
+                    and path.name not in retained
+                    and path.stat().st_mtime < time.time() - 60
+                ):
                     path.unlink()
             except OSError:
                 pass
@@ -257,6 +304,7 @@ def read_contacts(device, data_home=None, runtime_dir=None):
 
 
 def stream_lines(event):
+    """Yield bounded JSON lines for watch mode, framing oversized snapshots."""
     encoded = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
     if len(encoded.encode("utf-8")) <= 48 * 1024:
         yield encoded
@@ -267,30 +315,53 @@ def stream_lines(event):
     size = 16 * 1024
     count = (len(encoded) + size - 1) // size
     for index in range(count):
-        yield json.dumps({"type": "chunk", "index": index + 1, "count": count,
-                          "data": encoded[index * size:(index + 1) * size]}, separators=(",", ":"))
+        yield json.dumps(
+            {
+                "type": "chunk",
+                "index": index + 1,
+                "count": count,
+                "data": encoded[index * size : (index + 1) * size],
+            },
+            separators=(",", ":"),
+        )
 
 
 def emit(event):
+    """Write a watch event, flushing each line for the long-running subscriber."""
     for line in stream_lines(event):
         print(line, flush=True)
 
 
+def write_response(response):
+    """Write one complete JSON result for runAsync, which decodes stdout once."""
+    print(json.dumps(response, ensure_ascii=False, separators=(",", ":")), flush=True)
+
+
 class Bridge:
+    """Translate session D-Bus calls and signals into the Luau service protocol.
+
+    Calls are synchronous inside this separate process, with a 10-second D-Bus
+    timeout. The class owns subscriptions, but never stores conversation history.
+    """
+
     def __init__(self):
         try:
             from gi.repository import Gio, GLib
         except ImportError as exc:
-            raise RuntimeError("Install Python 3 and PyGObject (python-gobject on Arch; python3-gi on Debian/Ubuntu).") from exc
+            raise RuntimeError(
+                "Install Python 3 and PyGObject (python-gobject on Arch; python3-gi on Debian/Ubuntu)."
+            ) from exc
         self.Gio, self.GLib = Gio, GLib
         self.bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
         self.loop = GLib.MainLoop()
         self.pending_snapshots = set()
 
     def call(self, path, interface, method, signature=None, args=()):
+        """Invoke a method with an explicit GVariant argument signature."""
         params = self.GLib.Variant(signature, args) if signature else None
-        return self.bus.call_sync(SERVICE, path, interface, method, params, None,
-                                  self.Gio.DBusCallFlags.NONE, 10000, None)
+        return self.bus.call_sync(
+            SERVICE, path, interface, method, params, None, self.Gio.DBusCallFlags.NONE, 10000, None
+        )
 
     def properties(self, path, interface):
         return unpack(self.call(path, PROPERTIES, "GetAll", "(s)", (interface,)))[0]
@@ -305,37 +376,57 @@ class Bridge:
         return {n.attrib["name"] for n in ET.fromstring(xml).findall("interface")}
 
     def available(self, device):
-        props = self.properties(self.path(device), DEVICE)
-        return bool(props.get("isPaired") and props.get("isReachable"))
+        properties = self.properties(self.path(device), DEVICE)
+        return bool(properties.get("isPaired") and properties.get("isReachable"))
 
     def notification(self, device, public_id):
+        """Read current notification actions; callers must tolerate expiration."""
         if not re.fullmatch(r"[A-Za-z0-9_]+", public_id):
             raise ValueError("Invalid notification ID")
         path = self.path(device) + "/notifications/" + public_id
-        props = self.properties(path, DEVICE + ".notifications.notification")
-        return {"id": public_id, "app": props.get("appName", ""),
-                "title": props.get("title", ""), "text": props.get("text", ""),
-                "replyId": props.get("replyId", ""), "dismissable": props.get("dismissable", False),
-                "icon": props.get("iconPath", "")}
+        properties = self.properties(path, DEVICE + ".notifications.notification")
+        return {
+            "id": public_id,
+            "app": properties.get("appName", ""),
+            "title": properties.get("title", ""),
+            "text": properties.get("text", ""),
+            "replyId": properties.get("replyId", ""),
+            "dismissable": properties.get("dismissable", False),
+            "icon": properties.get("iconPath", ""),
+        }
 
     def snapshot(self, device):
+        """Read capabilities and current caches without fetching full SMS histories."""
         path = self.path(device)
         if not self.available(device):
             return [{"type": "connection", "device": device, "connected": False}]
         interfaces = self.interfaces(path)
         loaded = unpack(self.call(path, DEVICE, "loadedPlugins"))[0]
-        caps = {"messages": DEVICE + ".conversations" in interfaces,
-                "contacts": "kdeconnect_contacts" in loaded,
-                "notifications": "kdeconnect_notifications" in loaded,
-                "calls": "kdeconnect_telephony" in loaded}
-        events = [{"type": "capabilities", "device": device, "capabilities": caps, "connected": True}]
-        if caps["contacts"]:
+        capabilities = {
+            "messages": DEVICE + ".conversations" in interfaces,
+            "contacts": "kdeconnect_contacts" in loaded,
+            "notifications": "kdeconnect_notifications" in loaded,
+            "calls": "kdeconnect_telephony" in loaded,
+        }
+        events = [
+            {
+                "type": "capabilities",
+                "device": device,
+                "capabilities": capabilities,
+                "connected": True,
+            }
+        ]
+        if capabilities["contacts"]:
             events.append({"type": "contacts", "device": device, "items": read_contacts(device)})
-        if caps["messages"]:
+        if capabilities["messages"]:
             records = unpack(self.call(path, DEVICE + ".conversations", "activeConversations"))[0]
-            events.append({"type": "threads", "device": device, "items": [decode_message(m) for m in records]})
-        if caps["notifications"]:
-            ids = unpack(self.call(path + "/notifications", DEVICE + ".notifications", "activeNotifications"))[0]
+            events.append(
+                {"type": "threads", "device": device, "items": [decode_message(m) for m in records]}
+            )
+        if capabilities["notifications"]:
+            ids = unpack(
+                self.call(path + "/notifications", DEVICE + ".notifications", "activeNotifications")
+            )[0]
             items = []
             for public_id in ids:
                 try:
@@ -346,57 +437,92 @@ class Bridge:
         return events
 
     def request(self, command):
-        device, op = command.get("device", ""), command.get("op")
+        """Perform one validated operation and return immediate snapshot events.
+
+        History contents arrive through the watch subscription. A successful
+        send means the D-Bus method accepted the request, not that it was delivered.
+        """
+        device, operation = command.get("device", ""), command.get("op")
         path = self.path(device)
         if not self.available(device):
             raise ValueError("Phone is disconnected or unpaired")
-        conv = DEVICE + ".conversations"
-        if op == "sync":
+        conversation_interface = DEVICE + ".conversations"
+        if operation == "sync":
             events = self.snapshot(device)
-            caps = events[0].get("capabilities", {})
-            if caps.get("messages"):
-                self.call(path, conv, "requestAllConversationThreads")
+            capabilities = events[0].get("capabilities", {})
+            if capabilities.get("messages"):
+                self.call(path, conversation_interface, "requestAllConversationThreads")
             return events
-        if op == "contacts_sync":
+        if operation == "contacts_sync":
             self.call(path + "/contacts", DEVICE + ".contacts", "synchronizeRemoteWithLocal")
-        elif op == "history":
+        elif operation == "history":
             start = max(0, int(command.get("start", 0)))
-            self.call(path, conv, "requestConversation", "(xii)",
-                      (int(command["thread"]), start, start + PAGE_SIZE))
-        elif op in ("sms_send", "notification_reply"):
+            self.call(
+                path,
+                conversation_interface,
+                "requestConversation",
+                "(xii)",
+                (int(command["thread"]), start, start + PAGE_SIZE),
+            )
+        elif operation in ("sms_send", "notification_reply"):
             text = command.get("text", "")
             if not isinstance(text, str) or not text.strip():
                 raise ValueError("Message is empty")
-            if op == "notification_reply":
+            if operation == "notification_reply":
                 notification = self.notification(device, command["notification"])
                 if not notification["replyId"] or notification["replyId"] != command.get("replyId"):
                     raise ValueError("Notification reply is no longer available")
-                self.call(path + "/notifications", DEVICE + ".notifications", "sendReply", "(ss)",
-                          (notification["replyId"], text))
+                self.call(
+                    path + "/notifications",
+                    DEVICE + ".notifications",
+                    "sendReply",
+                    "(ss)",
+                    (notification["replyId"], text),
+                )
             else:
-                attachments = [self.GLib.Variant("s", command["attachment"])] if command.get("attachment") else []
+                attachments = (
+                    [self.GLib.Variant("s", command["attachment"])]
+                    if command.get("attachment")
+                    else []
+                )
                 if command.get("thread"):
-                    self.call(path, conv, "replyToConversation", "(xsav)", (int(command["thread"]), text, attachments))
+                    self.call(
+                        path,
+                        conversation_interface,
+                        "replyToConversation",
+                        "(xsav)",
+                        (int(command["thread"]), text, attachments),
+                    )
                 else:
                     number = command.get("destination", "").strip()
                     if not number:
                         raise ValueError("Choose a recipient")
-                    self.call(path, conv, "sendWithoutConversation", "(avsav)",
-                              ([self.GLib.Variant("(s)", (number,))], text, attachments))
-        elif op == "notification_dismiss":
+                    self.call(
+                        path,
+                        conversation_interface,
+                        "sendWithoutConversation",
+                        "(avsav)",
+                        ([self.GLib.Variant("(s)", (number,))], text, attachments),
+                    )
+        elif operation == "notification_dismiss":
             notification = self.notification(device, command["notification"])
             if not notification["dismissable"]:
                 raise ValueError("Notification cannot be dismissed")
-            self.call(path + "/notifications/" + notification["id"],
-                      DEVICE + ".notifications.notification", "dismiss")
+            self.call(
+                path + "/notifications/" + notification["id"],
+                DEVICE + ".notifications.notification",
+                "dismiss",
+            )
         else:
             raise ValueError("Unsupported operation")
         return []
 
     def snapshot_later(self, device):
+        """Coalesce device/plugin-change signals into one delayed snapshot."""
         if device in self.pending_snapshots:
             return
         self.pending_snapshots.add(device)
+
         def refresh():
             self.pending_snapshots.discard(device)
             try:
@@ -405,9 +531,11 @@ class Bridge:
             except (self.GLib.Error, ValueError) as exc:
                 emit({"type": "error", "device": device, "message": safe_error(exc)})
             return False
+
         self.GLib.timeout_add(250, refresh)
 
     def signal(self, _bus, _sender, path, interface, signal, params, _data=None):
+        """Map subscribed KDE Connect signals to typed, device-scoped events."""
         try:
             values = unpack(params)
             if path == ROOT:
@@ -432,7 +560,9 @@ class Bridge:
                     return
             elif interface == DEVICE + ".notifications":
                 if signal in ("notificationPosted", "notificationUpdated"):
-                    event.update(type="notification", notification=self.notification(device, values[0]))
+                    event.update(
+                        type="notification", notification=self.notification(device, values[0])
+                    )
                 elif signal == "notificationRemoved":
                     event.update(type="notification_removed", id=values[0])
                 elif signal == "allNotificationsRemoved":
@@ -442,9 +572,20 @@ class Bridge:
             elif interface == DEVICE + ".contacts" and signal == "localCacheSynchronized":
                 event.update(type="contacts", items=read_contacts(device))
             elif interface == DEVICE + ".telephony" and signal == "callReceived":
-                event.update(type="call", call={"event": values[0], "number": values[1],
-                                                "name": values[2], "date": int(time.time())})
-            elif interface == DEVICE and signal in ("reachableChanged", "pairStateChanged", "pluginsChanged"):
+                event.update(
+                    type="call",
+                    call={
+                        "event": values[0],
+                        "number": values[1],
+                        "name": values[2],
+                        "date": int(time.time()),
+                    },
+                )
+            elif interface == DEVICE and signal in (
+                "reachableChanged",
+                "pairStateChanged",
+                "pluginsChanged",
+            ):
                 self.snapshot_later(device)
                 return
             else:
@@ -454,8 +595,11 @@ class Bridge:
             emit({"type": "error", "message": safe_error(exc)})
 
     def initial(self):
+        """Queue paired-device snapshots and release deferred service requests."""
         try:
-            devices = unpack(self.call(ROOT, SERVICE + ".daemon", "devices", "(bb)", (False, True)))[0]
+            devices = unpack(
+                self.call(ROOT, SERVICE + ".daemon", "devices", "(bb)", (False, True))
+            )[0]
             for device in devices:
                 self.snapshot_later(device)
             emit({"type": "ready"})
@@ -463,27 +607,38 @@ class Bridge:
             emit({"type": "error", "message": safe_error(exc)})
 
     def owner_changed(self, _bus, _sender, _path, _interface, _signal, params, _data=None):
+        """Invalidate outstanding requests when the daemon's bus owner changes."""
         _name, _old, new = unpack(params)
         emit({"type": "reset"})
         if new:
             self.initial()
 
     def watch(self):
-        self.bus.signal_subscribe(SERVICE, None, None, None, None,
-                                  self.Gio.DBusSignalFlags.NONE, self.signal)
-        self.bus.signal_subscribe("org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged",
-                                  "/org/freedesktop/DBus", SERVICE, self.Gio.DBusSignalFlags.NONE,
-                                  self.owner_changed)
+        """Subscribe before snapshots and announce readiness before any history load."""
+        self.bus.signal_subscribe(
+            SERVICE, None, None, None, None, self.Gio.DBusSignalFlags.NONE, self.signal
+        )
+        self.bus.signal_subscribe(
+            "org.freedesktop.DBus",
+            "org.freedesktop.DBus",
+            "NameOwnerChanged",
+            "/org/freedesktop/DBus",
+            SERVICE,
+            self.Gio.DBusSignalFlags.NONE,
+            self.owner_changed,
+        )
         self.initial()
+
         def heartbeat():
             emit({"type": "heartbeat"})
             return True
+
         self.GLib.timeout_add_seconds(10, heartbeat)
         self.loop.run()
 
 
 def safe_error(exc):
-    # Do not include method arguments or message bodies in UI errors/logs.
+    """Map backend errors to UI text without including message bodies or arguments."""
     if isinstance(exc, (ValueError, RuntimeError)):
         return str(exc)
     text = str(exc)
@@ -492,7 +647,9 @@ def safe_error(exc):
     if "ServiceUnknown" in text or "NameHasNoOwner" in text:
         return "KDE Connect is not running"
     if "Timeout" in text or "timed out" in text:
-        return "KDE Connect did not respond; the outcome is unknown. Check the phone before retrying."
+        return (
+            "KDE Connect did not respond; the outcome is unknown. Check the phone before retrying."
+        )
     return "KDE Connect request failed; check the connection and phone permissions"
 
 
@@ -506,12 +663,16 @@ def main():
         if args.mode == "watch":
             bridge.watch()
         elif args.mode == "request":
-            emit({"ok": True, "events": bridge.request(json.loads(args.command or "{}"))})
+            write_response({"ok": True, "events": bridge.request(json.loads(args.command or "{}"))})
         else:
-            emit({"ok": True})
+            write_response({"ok": True})
         return 0
-    except (Exception,) as exc:
-        emit({"type": "error", "ok": False, "message": safe_error(exc)})
+    except Exception as exc:
+        response = {"type": "error", "ok": False, "message": safe_error(exc)}
+        if args.mode == "watch":
+            emit(response)
+        else:
+            write_response(response)
         return 1
 
 
